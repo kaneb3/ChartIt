@@ -1,0 +1,18 @@
+# Client data files - do not commit
+*.xlsx
+*.xlsm
+*.xls
+*.csv
+
+# Node
+node_modules/
+package-lock.json
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Temp/helper scripts
+insert_favicon.js
+fix_favicon.js
+inspect_excel.js
