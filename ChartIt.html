@@ -9,7 +9,6 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-<script src="https://kaneb3.github.io/ChartIt/version.js" onerror=""></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto:wght@400;500;700&family=Open+Sans:wght@400;600;700&family=Lato:wght@400;700&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -375,7 +374,6 @@ input[type="file"] { display:none; }
 .theme-swatch .sw-body { height:70%; width:100%; display:flex; align-items:center; justify-content:center; }
 .theme-swatch .sw-label { font-size:7px; font-weight:600; text-align:center; line-height:1.1; }
 
-@keyframes slideDown { from { transform:translateY(-100%); } to { transform:translateY(0); } }
 
 </style>
 
@@ -400,11 +398,6 @@ input[type="file"] { display:none; }
 </head>
 <body>
 
-<div id="updateBanner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#2D231C;color:#fff;padding:10px 20px;font-size:13px;font-family:'Inter',system-ui,sans-serif;display:none;align-items:center;justify-content:center;gap:12px;box-shadow:0 2px 8px rgba(0,0,0,.25);animation:slideDown .3s ease-out;">
-  <span id="updateBannerMsg"></span>
-  <a id="updateBannerLink" href="#" target="_blank" rel="noopener" style="color:#fff;background:#D42D1A;padding:5px 14px;border-radius:5px;text-decoration:none;font-weight:600;font-size:12px;">Download Update</a>
-  <button onclick="document.getElementById('updateBanner').style.display='none'" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;padding:0 4px;line-height:1;opacity:.7;">&#215;</button>
-</div>
 
 <div class="loading-overlay" id="loadingOverlay"><div class="loading-box"><div class="spinner"></div><p id="loadingText">Parsing workbook...</p></div></div>
 <div class="drop-overlay" id="dropOverlay"><div class="drop-overlay-content"><h3>Drop Excel files here</h3><p>.xlsx or .xlsm workbooks</p></div></div>
@@ -415,7 +408,6 @@ input[type="file"] { display:none; }
   <div class="sidebar-header">
     <img src="data:image/png;base64,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" alt="Intersnack">
     <h1>ChartIt</h1>
-    <span style="font-size:10px;color:var(--text-secondary);margin-top:2px;" id="appVersionLabel"></span>
   </div>
   <div class="sidebar-section">
     <h3>Upload Files</h3>
@@ -500,8 +492,6 @@ input[type="file"] { display:none; }
 /* ═══════════════════════════════════════════
    CONSTANTS
    ═══════════════════════════════════════════ */
-const APP_VERSION = "1.0.0";
-const VERSION_CHECK_URL = "https://kaneb3.github.io/ChartIt/version.js";
 const METRIC_COLS = [
   'Net Net Spend','In Scope','Out of Scope','Gross Rate Card','Net Spend',
   'Norm Diff','Norm Diff (Neg)','Norm Diff w/ INF','Norm Diff w/ INF (Neg)',
@@ -517,8 +507,6 @@ const FONTS = ['Inter','Roboto','Open Sans','Lato','Poppins','Arial','Segoe UI',
 const GOOD_DIMS = ['Brand','Campaign','Sales House Cleaned','Geography','Division/LOB','Product','Sub Media','Quarter','Month','Station Cleaned','Buy Type Cleaned','Site Cleaned','Site Category Cleaned','Format Category','Campaign Type','Buying Model','Region/City Cleaned','Year'];
 const SIZES = [{v:'small',l:'Quarter'},{v:'medium',l:'Third'},{v:'half',l:'Half'},{v:'full',l:'Full Width'}];
 if (window.ChartDataLabels) Chart.register(ChartDataLabels);
-document.addEventListener('DOMContentLoaded', () => { const el = document.getElementById('appVersionLabel'); if (el) el.textContent = 'v' + APP_VERSION; });
-
 const SHADOW_MAP = {
   none: 'none',
   sm: '0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06)',
@@ -4373,23 +4361,6 @@ renderAll();
 document.addEventListener('click', e => {
   if (!e.target.closest('#toolsDropdown')) closeToolsMenu();
 });
-
-function showUpdateBanner(newVersion, downloadUrl) {
-  const banner = document.getElementById('updateBanner');
-  document.getElementById('updateBannerMsg').textContent =
-    'A newer version of ChartIt is available (v' + newVersion + '). You are running v' + APP_VERSION + '.';
-  document.getElementById('updateBannerLink').href = downloadUrl || '#';
-  banner.style.display = 'flex';
-}
-
-function checkForUpdate() {
-  if (!window.LATEST_VERSION) return;
-  if (window.LATEST_VERSION !== APP_VERSION) {
-    const dlUrl = window.LATEST_VERSION_URL || VERSION_CHECK_URL.replace(/version\.js$/i, 'ChartIt.html');
-    showUpdateBanner(window.LATEST_VERSION, dlUrl);
-  }
-}
-checkForUpdate();
 </script>
 
 <div class="formula-manager-overlay" id="formulaManagerOverlay" onclick="if(event.target===this)closeFormulaManager()">
