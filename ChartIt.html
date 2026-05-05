@@ -625,6 +625,102 @@ function detectHeaderRow(sheet) {
   return 0;
 }
 
+const _xlsxWorkerCode = `
+importScripts('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js');
+const skipPat = /^(instructions|parameters|validationhelper|lookups|.*validate\\s*macros)$/i;
+function detectHdrRow(sheet) {
+  const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
+  for (let r = range.s.r; r <= Math.min(range.s.r + 15, range.e.r); r++) {
+    let filled = 0, total = 0;
+    for (let c = range.s.c; c <= Math.min(range.s.c + 10, range.e.c); c++) {
+      total++;
+      const cell = sheet[XLSX.utils.encode_cell({r, c})];
+      if (cell && cell.v != null && String(cell.v).trim()) filled++;
+    }
+    if (total > 0 && filled / total >= 0.5) {
+      const types = [];
+      for (let c = range.s.c; c <= Math.min(range.s.c + 10, range.e.c); c++) {
+        const cell = sheet[XLSX.utils.encode_cell({r, c})];
+        if (cell) types.push(typeof cell.v);
+      }
+      if (types.filter(t => t === 'string').length >= types.length * 0.5) return r;
+    }
+  }
+  return 0;
+}
+const wbCache = {};
+onmessage = function(e) {
+  const { action, id, buffer, fileName, market, media, sheetName, headerRow } = e.data;
+  if (action === 'parseFile') {
+    try {
+      const wb = XLSX.read(new Uint8Array(buffer), { type:'array' });
+      wbCache[id] = wb;
+      const sheets = [];
+      for (const sn of wb.SheetNames) {
+        if (skipPat.test(sn.trim())) {
+          const ref = wb.Sheets[sn]['!ref'];
+          const est = ref ? parseInt(ref.replace(/.*:.*?(\\d+)$/,'$1')) : 0;
+          sheets.push({ name:sn, enabled:false, rows:null, columns:null, rowCount:est, headerRow:0 });
+          continue;
+        }
+        const raw = wb.Sheets[sn];
+        const hdr = detectHdrRow(raw);
+        const rows = XLSX.utils.sheet_to_json(raw, { defval:'', range: hdr });
+        const cols = new Set();
+        for (const r of rows) {
+          r.__file = fileName; r.__sheet = sn; r.__market = market; r.__media = media;
+          for (const k of Object.keys(r)) cols.add(k);
+        }
+        sheets.push({ name:sn, enabled:true, rows, columns:[...cols], rowCount:rows.length, headerRow:hdr });
+      }
+      postMessage({ action:'fileParsed', id, sheets });
+    } catch(err) { postMessage({ action:'error', id, error: err.message }); }
+  } else if (action === 'parseSheet') {
+    try {
+      let wb = wbCache[id];
+      if (!wb) { wb = XLSX.read(new Uint8Array(buffer), { type:'array' }); wbCache[id] = wb; }
+      const raw = wb.Sheets[sheetName];
+      if (!raw) { postMessage({ action:'sheetParsed', id, sheetName, rows:[], columns:[] }); return; }
+      const hdr = headerRow || 0;
+      const rows = XLSX.utils.sheet_to_json(raw, { defval:'', range: hdr });
+      const cols = new Set();
+      for (const r of rows) {
+        r.__file = fileName; r.__sheet = sheetName; r.__market = market; r.__media = media;
+        for (const k of Object.keys(r)) cols.add(k);
+      }
+      postMessage({ action:'sheetParsed', id, sheetName, rows, columns:[...cols] });
+    } catch(err) { postMessage({ action:'error', id, error: err.message }); }
+  } else if (action === 'clearCache') {
+    delete wbCache[id];
+  }
+};
+`;
+let _xlsxWorker = null;
+let _workerJobId = 0;
+const _workerCallbacks = {};
+function getXlsxWorker() {
+  if (!_xlsxWorker) {
+    const blob = new Blob([_xlsxWorkerCode], { type:'application/javascript' });
+    _xlsxWorker = new Worker(URL.createObjectURL(blob));
+    _xlsxWorker.onmessage = function(e) {
+      const cb = _workerCallbacks[e.data.id];
+      if (cb) { delete _workerCallbacks[e.data.id]; cb(e.data); }
+    };
+  }
+  return _xlsxWorker;
+}
+function workerRequest(msg) {
+  return new Promise((resolve, reject) => {
+    const id = '_wj' + (++_workerJobId);
+    msg.id = id;
+    _workerCallbacks[id] = (data) => {
+      if (data.action === 'error') reject(new Error(data.error));
+      else resolve(data);
+    };
+    getXlsxWorker().postMessage(msg, msg.buffer ? [msg.buffer] : []);
+  });
+}
+
 async function processFile(file) {
   const arrayBuf = await new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -632,64 +728,45 @@ async function processFile(file) {
     reader.onerror = reject;
     reader.readAsArrayBuffer(file);
   });
-  const buffer = new Uint8Array(arrayBuf);
-  const wb = XLSX.read(buffer, { type:'array' });
+  const keepBuf = new Uint8Array(arrayBuf.slice(0));
   const meta = parseFileName(file.name);
-  const skipPat = /^(instructions|parameters|validationhelper|lookups|.*validate\s*macros)$/i;
-  const sheets = [];
-  for (let i = 0; i < wb.SheetNames.length; i++) {
-    const sn = wb.SheetNames[i];
-    await new Promise(r => setTimeout(r, 0));
-    if (skipPat.test(sn.trim())) {
-      const ref = wb.Sheets[sn]['!ref'];
-      const estRows = ref ? parseInt(ref.replace(/.*:.*?(\d+)$/,'$1')) : 0;
-      sheets.push({ name:sn, enabled:false, rows:null, columns:null, rowCount:estRows, headerRow:0 });
-      continue;
-    }
-    const rawSheet = wb.Sheets[sn];
-    const hdrRow = detectHeaderRow(rawSheet);
-    const rows = [], cols = new Set();
-    XLSX.utils.sheet_to_json(rawSheet, { defval:'', range: hdrRow }).forEach(r => {
-      r.__file = file.name; r.__sheet = sn; r.__market = meta.market; r.__media = meta.media;
-      Object.keys(r).forEach(k => cols.add(k));
-      rows.push(r);
-    });
-    sheets.push({ name:sn, enabled:true, rows, columns:[...cols], rowCount:rows.length, headerRow:hdrRow });
-  }
-  return { fileName:file.name, meta, buffer, sheets };
+  const result = await workerRequest({
+    action:'parseFile', buffer:arrayBuf,
+    fileName:file.name, market:meta.market, media:meta.media
+  });
+  return { fileName:file.name, meta, buffer:keepBuf, sheets:result.sheets, _workerId:result.id };
 }
 
-function parseSheet(fileEntry, sheetName) {
-  const wb = XLSX.read(fileEntry.buffer, { type:'array' });
-  const rawSheet = wb.Sheets[sheetName];
-  if (!rawSheet) return;
+async function parseSheet(fileEntry, sheetName) {
   const s = fileEntry.sheets.find(sh => sh.name === sheetName);
   if (!s) return;
   const hdrRow = s.headerRow || 0;
-  const rows = [], cols = new Set();
-  XLSX.utils.sheet_to_json(rawSheet, { defval:'', range: hdrRow }).forEach(r => {
-    r.__file = fileEntry.fileName; r.__sheet = sheetName;
-    r.__market = fileEntry.meta.market; r.__media = fileEntry.meta.media;
-    Object.keys(r).forEach(k => cols.add(k));
-    rows.push(r);
+  const bufCopy = fileEntry.buffer.buffer.slice(0);
+  const result = await workerRequest({
+    action:'parseSheet', buffer:bufCopy,
+    id: fileEntry._workerId,
+    fileName:fileEntry.fileName, market:fileEntry.meta.market, media:fileEntry.meta.media,
+    sheetName, headerRow:hdrRow
   });
-  s.rows = rows;
-  s.columns = [...cols];
-  s.rowCount = rows.length;
+  s.rows = result.rows;
+  s.columns = result.columns;
+  s.rowCount = result.rows.length;
   s.enabled = true;
 }
 
-function setSheetHeaderRow(fileName, sheetName, row) {
+async function setSheetHeaderRow(fileName, sheetName, row) {
   const f = S.files.find(f => f.fileName === fileName);
   if (!f) return;
   const s = f.sheets.find(sh => sh.name === sheetName);
   if (!s) return;
   s.headerRow = row || 0;
   if (s.enabled) {
-    parseSheet(f, sheetName);
+    showLoading('Re-parsing ' + sheetName + '...');
+    await parseSheet(f, sheetName);
     rebuildAllRows();
     applyFilters();
     renderAll();
+    hideLoading();
     showToast(`Re-parsed "${sheetName}" from row ${row}`);
   }
 }
@@ -1253,18 +1330,16 @@ function renderFileList() {
   });
 }
 
-function toggleSheet(fileName, sheetName, enable) {
+async function toggleSheet(fileName, sheetName, enable) {
   const f = S.files.find(f=>f.fileName===fileName);
   if (!f) return;
   if (enable) {
     showLoading('Parsing ' + sheetName + '...');
-    setTimeout(() => {
-      parseSheet(f, sheetName);
-      rebuildAllRows();
-      rebuildFilters(); applyFilters(); renderAll();
-      renderFileList();
-      hideLoading();
-    }, 30);
+    await parseSheet(f, sheetName);
+    rebuildAllRows();
+    rebuildFilters(); applyFilters(); renderAll();
+    renderFileList();
+    hideLoading();
   } else {
     disableSheet(f, sheetName);
     rebuildAllRows();
@@ -3966,10 +4041,17 @@ function saveDashboardToFile(includeData) {
         for (const sh of f.sheets) {
           await new Promise(r => setTimeout(r, 0));
           let rows = sh.rows;
-          if (!rows && f.buffer) {
-            if (!wb) wb = XLSX.read(f.buffer, {type:'array'});
-            const rawSheet = wb.Sheets[sh.name];
-            if (rawSheet) rows = XLSX.utils.sheet_to_json(rawSheet, {defval:'', range: sh.headerRow || 0});
+          if (!rows && f.buffer && f.buffer.byteLength) {
+            try {
+              const bufCopy = f.buffer.buffer.slice(0);
+              const parsed = await workerRequest({
+                action:'parseSheet', buffer:bufCopy,
+                id: f._workerId,
+                fileName:f.fileName, market:f.meta.market, media:f.meta.media,
+                sheetName:sh.name, headerRow:sh.headerRow || 0
+              });
+              rows = parsed.rows;
+            } catch(e) { console.warn('Could not parse sheet for save:', sh.name, e); }
           }
           if (!rows) { fileData.sheets.push({ name: sh.name, enabled: sh.enabled, columns: sh.columns || [], rows: [] }); continue; }
           const cols = sh.columns || Object.keys(rows[0]||{}).filter(k => !metaKeys.has(k));
