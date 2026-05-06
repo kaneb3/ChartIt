@@ -627,101 +627,84 @@ function detectHeaderRow(sheet) {
 
 const _xlsxWorkerCode = `
 importScripts('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js');
-const skipPat = /^(instructions|parameters|validationhelper|lookups|.*validate\\s*macros)$/i;
+var skipPat = /^(instructions|parameters|validationhelper|lookups|.*validate\\s*macros)$/i;
 function detectHdrRow(sheet) {
-  var data = sheet['!data'];
-  if (data) {
-    for (var r = 0; r <= Math.min(15, data.length - 1); r++) {
-      var row = data[r]; if (!row) continue;
-      var filled = 0, total = 0, types = [];
-      for (var c = 0; c <= Math.min(10, row.length - 1); c++) {
-        total++;
-        var cell = row[c];
-        if (cell && cell.v != null && String(cell.v).trim()) { filled++; types.push(typeof cell.v); }
-      }
-      if (total > 0 && filled / total >= 0.5 && types.filter(function(t){return t==='string'}).length >= types.length * 0.5) return r;
-    }
-    return 0;
-  }
   var range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
   for (var r = range.s.r; r <= Math.min(range.s.r + 15, range.e.r); r++) {
     var filled = 0, total = 0;
     for (var c = range.s.c; c <= Math.min(range.s.c + 10, range.e.c); c++) {
       total++;
-      var cell = sheet[XLSX.utils.encode_cell({r:r, c:c})];
+      var addr = XLSX.utils.encode_cell({r:r, c:c});
+      var cell = sheet[addr];
       if (cell && cell.v != null && String(cell.v).trim()) filled++;
     }
     if (total > 0 && filled / total >= 0.5) {
       var types = [];
-      for (var c = range.s.c; c <= Math.min(range.s.c + 10, range.e.c); c++) {
-        var cell = sheet[XLSX.utils.encode_cell({r:r, c:c})];
-        if (cell) types.push(typeof cell.v);
+      for (var c2 = range.s.c; c2 <= Math.min(range.s.c + 10, range.e.c); c2++) {
+        var cell2 = sheet[XLSX.utils.encode_cell({r:r, c:c2})];
+        if (cell2) types.push(typeof cell2.v);
       }
       if (types.filter(function(t){return t==='string'}).length >= types.length * 0.5) return r;
     }
   }
   return 0;
 }
-var bufferCache = {};
-function getWb(id, buffer) {
-  var buf = buffer ? new Uint8Array(buffer) : bufferCache[id];
-  if (!buf) return null;
-  if (!bufferCache[id] && buffer) bufferCache[id] = buf;
-  return XLSX.read(buf, { type:'array', dense:true });
+function sheetToRows(raw, hdr, fileName, sheetName, market, media) {
+  var rows = XLSX.utils.sheet_to_json(raw, { defval:'', range:hdr });
+  var cols = {};
+  for (var ri = 0; ri < rows.length; ri++) {
+    var r = rows[ri];
+    r.__file = fileName; r.__sheet = sheetName; r.__market = market; r.__media = media;
+    var keys = Object.keys(r);
+    for (var ki = 0; ki < keys.length; ki++) cols[keys[ki]] = 1;
+  }
+  return { rows: rows, columns: Object.keys(cols) };
 }
+var wbCache = {};
+var bufCache = {};
 onmessage = function(e) {
   var d = e.data;
   if (d.action === 'parseFile') {
     try {
       var buf = new Uint8Array(d.buffer);
-      bufferCache[d.id] = buf;
-      var nameWb = XLSX.read(buf, { type:'array', bookSheets:true });
-      var allNames = nameWb.SheetNames;
-      var parseNames = allNames.filter(function(sn){ return !skipPat.test(sn.trim()); });
+      bufCache[d.id] = buf;
+      var wb = XLSX.read(buf, { type:'array' });
+      wbCache[d.id] = wb;
       var sheets = [];
-      for (var i = 0; i < allNames.length; i++) {
-        var sn = allNames[i];
+      for (var i = 0; i < wb.SheetNames.length; i++) {
+        var sn = wb.SheetNames[i];
         if (skipPat.test(sn.trim())) {
-          sheets.push({ name:sn, enabled:false, rows:null, columns:null, rowCount:0, headerRow:0 });
+          var ref = wb.Sheets[sn] ? wb.Sheets[sn]['!ref'] : null;
+          var est = ref ? parseInt(ref.replace(/.*:.*?(\\d+)$/, '$1')) : 0;
+          sheets.push({ name:sn, enabled:false, rows:null, columns:null, rowCount:est, headerRow:0 });
           continue;
         }
-        var wb = XLSX.read(buf, { type:'array', dense:true, sheets:sn });
         var raw = wb.Sheets[sn];
         var hdr = detectHdrRow(raw);
-        var rows = XLSX.utils.sheet_to_json(raw, { defval:'', range:hdr });
-        var cols = {};
-        for (var ri = 0; ri < rows.length; ri++) {
-          var r = rows[ri];
-          r.__file = d.fileName; r.__sheet = sn; r.__market = d.market; r.__media = d.media;
-          var keys = Object.keys(r);
-          for (var ki = 0; ki < keys.length; ki++) cols[keys[ki]] = 1;
-        }
-        sheets.push({ name:sn, enabled:true, rows:rows, columns:Object.keys(cols), rowCount:rows.length, headerRow:hdr });
-        postMessage({ action:'progress', id:d.id, sheet:sn, index:sheets.length, total:allNames.length });
+        var parsed = sheetToRows(raw, hdr, d.fileName, sn, d.market, d.media);
+        sheets.push({ name:sn, enabled:true, rows:parsed.rows, columns:parsed.columns, rowCount:parsed.rows.length, headerRow:hdr });
+        postMessage({ action:'progress', id:d.id, sheet:sn, index:i+1, total:wb.SheetNames.length });
       }
       postMessage({ action:'fileParsed', id:d.id, sheets:sheets });
     } catch(err) { postMessage({ action:'error', id:d.id, error: err.message }); }
   } else if (d.action === 'parseSheet') {
     try {
-      var buf = d.buffer ? new Uint8Array(d.buffer) : bufferCache[d.id];
-      if (!buf) { postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:[], columns:[] }); return; }
-      if (d.buffer && !bufferCache[d.id]) bufferCache[d.id] = buf;
-      var wb = XLSX.read(buf, { type:'array', dense:true, sheets:d.sheetName });
+      var wb = wbCache[d.id];
+      if (!wb) {
+        var buf = d.buffer ? new Uint8Array(d.buffer) : bufCache[d.id];
+        if (!buf) { postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:[], columns:[] }); return; }
+        wb = XLSX.read(buf, { type:'array' });
+        wbCache[d.id] = wb;
+      }
       var raw = wb.Sheets[d.sheetName];
       if (!raw) { postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:[], columns:[] }); return; }
       var hdr = d.headerRow || 0;
-      var rows = XLSX.utils.sheet_to_json(raw, { defval:'', range:hdr });
-      var cols = {};
-      for (var ri = 0; ri < rows.length; ri++) {
-        var r = rows[ri];
-        r.__file = d.fileName; r.__sheet = d.sheetName; r.__market = d.market; r.__media = d.media;
-        var keys = Object.keys(r);
-        for (var ki = 0; ki < keys.length; ki++) cols[keys[ki]] = 1;
-      }
-      postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:rows, columns:Object.keys(cols) });
+      var parsed = sheetToRows(raw, hdr, d.fileName, d.sheetName, d.market, d.media);
+      postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:parsed.rows, columns:parsed.columns });
     } catch(err) { postMessage({ action:'error', id:d.id, error: err.message }); }
   } else if (d.action === 'clearCache') {
-    delete bufferCache[d.id];
+    delete wbCache[d.id];
+    delete bufCache[d.id];
   }
 };
 `;
