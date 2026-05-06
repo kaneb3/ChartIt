@@ -649,7 +649,24 @@ function detectHdrRow(sheet) {
   }
   return 0;
 }
+function trimSheetRange(sheet) {
+  if (!sheet['!ref']) return;
+  var range = XLSX.utils.decode_range(sheet['!ref']);
+  var maxR = range.s.r, maxC = range.s.c;
+  var keys = Object.keys(sheet);
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    if (k.charAt(0) === '!') continue;
+    var cell = XLSX.utils.decode_cell(k);
+    if (cell.r > maxR) maxR = cell.r;
+    if (cell.c > maxC) maxC = cell.c;
+  }
+  if (maxR < range.e.r || maxC < range.e.c) {
+    sheet['!ref'] = XLSX.utils.encode_range({ s:range.s, e:{ r:maxR, c:maxC } });
+  }
+}
 function sheetToRows(raw, hdr, fileName, sheetName, market, media) {
+  trimSheetRange(raw);
   var rows = XLSX.utils.sheet_to_json(raw, { defval:'', range:hdr });
   var cols = {};
   for (var ri = 0; ri < rows.length; ri++) {
@@ -668,8 +685,10 @@ onmessage = function(e) {
     try {
       var buf = new Uint8Array(d.buffer);
       bufCache[d.id] = buf;
+      var t0 = Date.now();
       var wb = XLSX.read(buf, { type:'array' });
       wbCache[d.id] = wb;
+      console.log('[ChartIt] XLSX.read: ' + (Date.now()-t0) + 'ms');
       var sheets = [];
       for (var i = 0; i < wb.SheetNames.length; i++) {
         var sn = wb.SheetNames[i];
@@ -680,11 +699,14 @@ onmessage = function(e) {
           continue;
         }
         var raw = wb.Sheets[sn];
+        var ts = Date.now();
         var hdr = detectHdrRow(raw);
         var parsed = sheetToRows(raw, hdr, d.fileName, sn, d.market, d.media);
+        console.log('[ChartIt] Sheet "' + sn + '": ' + parsed.rows.length + ' rows in ' + (Date.now()-ts) + 'ms');
         sheets.push({ name:sn, enabled:true, rows:parsed.rows, columns:parsed.columns, rowCount:parsed.rows.length, headerRow:hdr });
         postMessage({ action:'progress', id:d.id, sheet:sn, index:i+1, total:wb.SheetNames.length });
       }
+      console.log('[ChartIt] Total parse: ' + (Date.now()-t0) + 'ms');
       postMessage({ action:'fileParsed', id:d.id, sheets:sheets });
     } catch(err) { postMessage({ action:'error', id:d.id, error: err.message }); }
   } else if (d.action === 'parseSheet') {
@@ -746,7 +768,7 @@ async function processFile(file) {
     reader.onerror = reject;
     reader.readAsArrayBuffer(file);
   });
-  const keepBuf = new Uint8Array(new Uint8Array(arrayBuf));
+  const keepBuf = new Uint8Array(arrayBuf.slice(0));
   const meta = parseFileName(file.name);
   _workerProgressFn = (p) => {
     const el = document.getElementById('loadingText');
@@ -817,6 +839,7 @@ function rebuildAllRows() {
 async function handleFiles(files) {
   const valid = [...files].filter(f => /\.(xlsx|xlsm)$/i.test(f.name));
   if (!valid.length) return;
+  console.time('[ChartIt] handleFiles total');
   showLoading('Parsing workbook' + (valid.length>1?'s':'') + '...');
   for (const file of valid) {
     if (S.files.find(f => f.fileName === file.name)) continue;
@@ -852,6 +875,7 @@ async function handleFiles(files) {
   rebuildFilters();
   applyFilters();
   renderAll();
+  console.timeEnd('[ChartIt] handleFiles total');
 }
 
 /* ═══════════════════════════════════════════
