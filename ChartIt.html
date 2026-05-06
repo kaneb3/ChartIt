@@ -628,54 +628,23 @@ function detectHeaderRow(sheet) {
 const _xlsxWorkerCode = `
 importScripts('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js');
 var skipPat = /^(instructions|parameters|validationhelper|lookups|.*validate\\s*macros)$/i;
+function getCell(sheet, r, c) {
+  var d = sheet['!data'];
+  if (d) return (d[r] && d[r][c]) ? d[r][c] : null;
+  return sheet[XLSX.utils.encode_cell({r:r,c:c})] || null;
+}
 function detectHdrRow(sheet) {
   var range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
   for (var r = range.s.r; r <= Math.min(range.s.r + 15, range.e.r); r++) {
-    var filled = 0, total = 0;
+    var filled = 0, total = 0, types = [];
     for (var c = range.s.c; c <= Math.min(range.s.c + 10, range.e.c); c++) {
       total++;
-      var addr = XLSX.utils.encode_cell({r:r, c:c});
-      var cell = sheet[addr];
-      if (cell && cell.v != null && String(cell.v).trim()) filled++;
+      var cell = getCell(sheet, r, c);
+      if (cell && cell.v != null && String(cell.v).trim()) { filled++; types.push(typeof cell.v); }
     }
-    if (total > 0 && filled / total >= 0.5) {
-      var types = [];
-      for (var c2 = range.s.c; c2 <= Math.min(range.s.c + 10, range.e.c); c2++) {
-        var cell2 = sheet[XLSX.utils.encode_cell({r:r, c:c2})];
-        if (cell2) types.push(typeof cell2.v);
-      }
-      if (types.filter(function(t){return t==='string'}).length >= types.length * 0.5) return r;
-    }
+    if (total > 0 && filled / total >= 0.5 && types.filter(function(t){return t==='string'}).length >= types.length * 0.5) return r;
   }
   return 0;
-}
-function trimSheetRange(sheet) {
-  if (!sheet['!ref']) return;
-  var range = XLSX.utils.decode_range(sheet['!ref']);
-  var maxR = range.s.r, maxC = range.s.c;
-  var keys = Object.keys(sheet);
-  for (var i = 0; i < keys.length; i++) {
-    var k = keys[i];
-    if (k.charAt(0) === '!') continue;
-    var cell = XLSX.utils.decode_cell(k);
-    if (cell.r > maxR) maxR = cell.r;
-    if (cell.c > maxC) maxC = cell.c;
-  }
-  if (maxR < range.e.r || maxC < range.e.c) {
-    sheet['!ref'] = XLSX.utils.encode_range({ s:range.s, e:{ r:maxR, c:maxC } });
-  }
-}
-function sheetToRows(raw, hdr, fileName, sheetName, market, media) {
-  trimSheetRange(raw);
-  var rows = XLSX.utils.sheet_to_json(raw, { defval:'', range:hdr });
-  var cols = {};
-  for (var ri = 0; ri < rows.length; ri++) {
-    var r = rows[ri];
-    r.__file = fileName; r.__sheet = sheetName; r.__market = market; r.__media = media;
-    var keys = Object.keys(r);
-    for (var ki = 0; ki < keys.length; ki++) cols[keys[ki]] = 1;
-  }
-  return { rows: rows, columns: Object.keys(cols) };
 }
 var wbCache = {};
 var bufCache = {};
@@ -686,27 +655,31 @@ onmessage = function(e) {
       var buf = new Uint8Array(d.buffer);
       bufCache[d.id] = buf;
       var t0 = Date.now();
-      var wb = XLSX.read(buf, { type:'array', cellFormula:false, cellHTML:false, cellStyles:false, cellNF:false, bookVBA:false });
+      var wb = XLSX.read(buf, { type:'array', dense:true });
       wbCache[d.id] = wb;
-      console.log('[ChartIt] XLSX.read: ' + (Date.now()-t0) + 'ms');
+      console.log('[ChartIt] ' + d.fileName + ' XLSX.read: ' + (Date.now()-t0) + 'ms');
       var sheets = [];
       for (var i = 0; i < wb.SheetNames.length; i++) {
         var sn = wb.SheetNames[i];
         if (skipPat.test(sn.trim())) {
-          var ref = wb.Sheets[sn] ? wb.Sheets[sn]['!ref'] : null;
-          var est = ref ? parseInt(ref.replace(/.*:.*?(\\d+)$/, '$1')) : 0;
-          sheets.push({ name:sn, enabled:false, rows:null, columns:null, rowCount:est, headerRow:0 });
+          sheets.push({ name:sn, enabled:false, rows:null, columns:null, rowCount:0, headerRow:0 });
           continue;
         }
         var raw = wb.Sheets[sn];
         var ts = Date.now();
         var hdr = detectHdrRow(raw);
-        var parsed = sheetToRows(raw, hdr, d.fileName, sn, d.market, d.media);
-        console.log('[ChartIt] Sheet "' + sn + '": ' + parsed.rows.length + ' rows in ' + (Date.now()-ts) + 'ms');
-        sheets.push({ name:sn, enabled:true, rows:parsed.rows, columns:parsed.columns, rowCount:parsed.rows.length, headerRow:hdr });
-        postMessage({ action:'progress', id:d.id, sheet:sn, index:i+1, total:wb.SheetNames.length });
+        var rows = XLSX.utils.sheet_to_json(raw, { defval:'', range:hdr });
+        var cols = {};
+        for (var ri = 0; ri < rows.length; ri++) {
+          var r = rows[ri];
+          r.__file = d.fileName; r.__sheet = sn; r.__market = d.market; r.__media = d.media;
+          var keys = Object.keys(r);
+          for (var ki = 0; ki < keys.length; ki++) cols[keys[ki]] = 1;
+        }
+        console.log('[ChartIt] ' + d.fileName + ' "' + sn + '": ' + rows.length + ' rows in ' + (Date.now()-ts) + 'ms');
+        sheets.push({ name:sn, enabled:true, rows:rows, columns:Object.keys(cols), rowCount:rows.length, headerRow:hdr });
       }
-      console.log('[ChartIt] Total parse: ' + (Date.now()-t0) + 'ms');
+      console.log('[ChartIt] ' + d.fileName + ' total: ' + (Date.now()-t0) + 'ms');
       postMessage({ action:'fileParsed', id:d.id, sheets:sheets });
     } catch(err) { postMessage({ action:'error', id:d.id, error: err.message }); }
   } else if (d.action === 'parseSheet') {
@@ -715,14 +688,21 @@ onmessage = function(e) {
       if (!wb) {
         var buf = d.buffer ? new Uint8Array(d.buffer) : bufCache[d.id];
         if (!buf) { postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:[], columns:[] }); return; }
-        wb = XLSX.read(buf, { type:'array', cellFormula:false, cellHTML:false, cellStyles:false, cellNF:false, bookVBA:false });
+        wb = XLSX.read(buf, { type:'array', dense:true });
         wbCache[d.id] = wb;
       }
       var raw = wb.Sheets[d.sheetName];
       if (!raw) { postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:[], columns:[] }); return; }
       var hdr = d.headerRow || 0;
-      var parsed = sheetToRows(raw, hdr, d.fileName, d.sheetName, d.market, d.media);
-      postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:parsed.rows, columns:parsed.columns });
+      var rows = XLSX.utils.sheet_to_json(raw, { defval:'', range:hdr });
+      var cols = {};
+      for (var ri = 0; ri < rows.length; ri++) {
+        var r = rows[ri];
+        r.__file = d.fileName; r.__sheet = d.sheetName; r.__market = d.market; r.__media = d.media;
+        var keys = Object.keys(r);
+        for (var ki = 0; ki < keys.length; ki++) cols[keys[ki]] = 1;
+      }
+      postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:rows, columns:Object.keys(cols) });
     } catch(err) { postMessage({ action:'error', id:d.id, error: err.message }); }
   } else if (d.action === 'clearCache') {
     delete wbCache[d.id];
@@ -730,34 +710,36 @@ onmessage = function(e) {
   }
 };
 `;
-let _xlsxWorker = null;
+const _xlsxWorkerBlob = new Blob([_xlsxWorkerCode], { type:'application/javascript' });
+const _xlsxWorkerUrl = URL.createObjectURL(_xlsxWorkerBlob);
 let _workerJobId = 0;
-const _workerCallbacks = {};
-let _workerProgressFn = null;
-function getXlsxWorker() {
-  if (!_xlsxWorker) {
-    const blob = new Blob([_xlsxWorkerCode], { type:'application/javascript' });
-    _xlsxWorker = new Worker(URL.createObjectURL(blob));
-    _xlsxWorker.onmessage = function(e) {
-      if (e.data.action === 'progress') {
-        if (_workerProgressFn) _workerProgressFn(e.data);
-        return;
-      }
-      const cb = _workerCallbacks[e.data.id];
-      if (cb) { delete _workerCallbacks[e.data.id]; cb(e.data); }
-    };
-  }
-  return _xlsxWorker;
+
+function spawnWorker() {
+  const w = new Worker(_xlsxWorkerUrl);
+  const cbs = {};
+  w.onmessage = function(e) {
+    const cb = cbs[e.data.id];
+    if (cb) { delete cbs[e.data.id]; cb(e.data); }
+  };
+  w._cbs = cbs;
+  return w;
 }
-function workerRequest(msg) {
+
+let _sharedWorker = null;
+function getSharedWorker() {
+  if (!_sharedWorker) _sharedWorker = spawnWorker();
+  return _sharedWorker;
+}
+
+function workerRequest(worker, msg) {
   return new Promise((resolve, reject) => {
     const id = '_wj' + (++_workerJobId);
     msg.id = id;
-    _workerCallbacks[id] = (data) => {
+    worker._cbs[id] = (data) => {
       if (data.action === 'error') reject(new Error(data.error));
       else resolve(data);
     };
-    getXlsxWorker().postMessage(msg, msg.buffer ? [msg.buffer] : []);
+    worker.postMessage(msg, msg.buffer ? [msg.buffer] : []);
   });
 }
 
@@ -770,26 +752,22 @@ async function processFile(file) {
   });
   const keepBuf = new Uint8Array(arrayBuf.slice(0));
   const meta = parseFileName(file.name);
-  _workerProgressFn = (p) => {
-    const el = document.getElementById('loadingText');
-    if (el) el.textContent = `Parsing sheet ${p.index}/${p.total}...`;
-  };
-  const result = await workerRequest({
+  const worker = spawnWorker();
+  const result = await workerRequest(worker, {
     action:'parseFile', buffer:arrayBuf,
     fileName:file.name, market:meta.market, media:meta.media
   });
-  _workerProgressFn = null;
-  return { fileName:file.name, meta, buffer:keepBuf, sheets:result.sheets, _workerId:result.id };
+  return { fileName:file.name, meta, buffer:keepBuf, sheets:result.sheets, _worker:worker };
 }
 
 async function parseSheet(fileEntry, sheetName) {
   const s = fileEntry.sheets.find(sh => sh.name === sheetName);
   if (!s) return;
   const hdrRow = s.headerRow || 0;
+  const worker = fileEntry._worker || getSharedWorker();
   const bufCopy = fileEntry.buffer.buffer.slice(0);
-  const result = await workerRequest({
+  const result = await workerRequest(worker, {
     action:'parseSheet', buffer:bufCopy,
-    id: fileEntry._workerId,
     fileName:fileEntry.fileName, market:fileEntry.meta.market, media:fileEntry.meta.media,
     sheetName, headerRow:hdrRow
   });
@@ -840,36 +818,26 @@ async function handleFiles(files) {
   const valid = [...files].filter(f => /\.(xlsx|xlsm)$/i.test(f.name));
   if (!valid.length) return;
   console.time('[ChartIt] handleFiles total');
-  showLoading('Parsing workbook' + (valid.length>1?'s':'') + '...');
-  for (const file of valid) {
-    if (S.files.find(f => f.fileName === file.name)) continue;
-    document.getElementById('loadingText').textContent = `Parsing ${file.name}...`;
-    await new Promise(r => setTimeout(r, 30));
-    try {
-      const result = await processFile(file);
-      if (S._pendingFilesMeta) {
-        const fm = S._pendingFilesMeta.find(m => m.fileName === file.name);
-        if (fm && fm.sheets) {
-          const reparseNeeded = [];
-          for (const savedSh of fm.sheets) {
-            const sh = result.sheets.find(s => s.name === savedSh.name);
-            if (!sh) continue;
-            const savedHdr = savedSh.headerRow || 0;
-            if (savedSh.enabled === false) {
-              sh.enabled = false; sh.rows = null; sh.columns = null; sh.headerRow = savedHdr;
-            } else if (savedHdr !== sh.headerRow) {
-              sh.headerRow = savedHdr;
-              reparseNeeded.push(sh.name);
-            }
-          }
-          S.files.push(result);
-          for (const sn of reparseNeeded) await parseSheet(result, sn);
-          continue;
+  showLoading('Parsing ' + valid.length + ' workbook' + (valid.length>1?'s':'') + ' in parallel...');
+  const toProcess = valid.filter(f => !S.files.find(ef => ef.fileName === f.name));
+  const promises = toProcess.map(file => processFile(file).then(result => {
+    if (S._pendingFilesMeta) {
+      const fm = S._pendingFilesMeta.find(m => m.fileName === file.name);
+      if (fm && fm.sheets) {
+        for (const savedSh of fm.sheets) {
+          const sh = result.sheets.find(s => s.name === savedSh.name);
+          if (!sh) continue;
+          const savedHdr = savedSh.headerRow || 0;
+          if (savedSh.enabled === false) {
+            sh.enabled = false; sh.rows = null; sh.columns = null; sh.headerRow = savedHdr;
+          } else { sh.headerRow = savedHdr; }
         }
       }
-      S.files.push(result);
-    } catch(err) { console.error(err); alert('Error parsing ' + file.name); }
-  }
+    }
+    return result;
+  }).catch(err => { console.error(err); alert('Error parsing ' + file.name); return null; }));
+  const results = await Promise.all(promises);
+  results.forEach(r => { if (r) S.files.push(r); });
   rebuildAllRows();
   hideLoading();
   rebuildFilters();
