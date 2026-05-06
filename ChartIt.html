@@ -628,18 +628,13 @@ function detectHeaderRow(sheet) {
 const _xlsxWorkerCode = `
 importScripts('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js');
 var skipPat = /^(instructions|parameters|validationhelper|lookups|.*validate\\s*macros)$/i;
-function getCell(sheet, r, c) {
-  var d = sheet['!data'];
-  if (d) return (d[r] && d[r][c]) ? d[r][c] : null;
-  return sheet[XLSX.utils.encode_cell({r:r,c:c})] || null;
-}
 function detectHdrRow(sheet) {
   var range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
   for (var r = range.s.r; r <= Math.min(range.s.r + 15, range.e.r); r++) {
     var filled = 0, total = 0, types = [];
     for (var c = range.s.c; c <= Math.min(range.s.c + 10, range.e.c); c++) {
       total++;
-      var cell = getCell(sheet, r, c);
+      var cell = sheet[XLSX.utils.encode_cell({r:r, c:c})];
       if (cell && cell.v != null && String(cell.v).trim()) { filled++; types.push(typeof cell.v); }
     }
     if (total > 0 && filled / total >= 0.5 && types.filter(function(t){return t==='string'}).length >= types.length * 0.5) return r;
@@ -655,7 +650,7 @@ onmessage = function(e) {
       var buf = new Uint8Array(d.buffer);
       bufCache[d.id] = buf;
       var t0 = Date.now();
-      var wb = XLSX.read(buf, { type:'array', dense:true });
+      var wb = XLSX.read(buf, { type:'array' });
       wbCache[d.id] = wb;
       console.log('[ChartIt] ' + d.fileName + ' XLSX.read: ' + (Date.now()-t0) + 'ms');
       var sheets = [];
@@ -688,7 +683,7 @@ onmessage = function(e) {
       if (!wb) {
         var buf = d.buffer ? new Uint8Array(d.buffer) : bufCache[d.id];
         if (!buf) { postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:[], columns:[] }); return; }
-        wb = XLSX.read(buf, { type:'array', dense:true });
+        wb = XLSX.read(buf, { type:'array' });
         wbCache[d.id] = wb;
       }
       var raw = wb.Sheets[d.sheetName];
