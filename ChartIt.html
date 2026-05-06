@@ -686,7 +686,7 @@ onmessage = function(e) {
       var buf = new Uint8Array(d.buffer);
       bufCache[d.id] = buf;
       var t0 = Date.now();
-      var wb = XLSX.read(buf, { type:'array' });
+      var wb = XLSX.read(buf, { type:'array', cellFormula:false, cellHTML:false, cellStyles:false, cellNF:false, bookVBA:false });
       wbCache[d.id] = wb;
       console.log('[ChartIt] XLSX.read: ' + (Date.now()-t0) + 'ms');
       var sheets = [];
@@ -715,7 +715,7 @@ onmessage = function(e) {
       if (!wb) {
         var buf = d.buffer ? new Uint8Array(d.buffer) : bufCache[d.id];
         if (!buf) { postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:[], columns:[] }); return; }
-        wb = XLSX.read(buf, { type:'array' });
+        wb = XLSX.read(buf, { type:'array', cellFormula:false, cellHTML:false, cellStyles:false, cellNF:false, bookVBA:false });
         wbCache[d.id] = wb;
       }
       var raw = wb.Sheets[d.sheetName];
