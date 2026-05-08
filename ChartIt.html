@@ -2534,11 +2534,13 @@ function renderChartWidget(w) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
 
-  if (!c.metrics || !c.metrics.length) {
+  const validMetrics = (c.metrics||[]).filter(m => (m.col && m.col.trim()) || (m.formula && m.formula.trim()));
+  if (!validMetrics.length) {
     const parent = canvas.parentElement;
     if (parent) parent.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-secondary);font-size:12px;">Add metrics in settings to display chart</div>';
     return;
   }
+  c.metrics = validMetrics;
 
   const dim = c.dimension || S.selectedDimension;
   const agg = aggFn(c.agg);
@@ -2655,6 +2657,19 @@ function renderChartWidget(w) {
     });
   }
 
+  if (c.labelOrder && c.labelOrder.length && !isPie) {
+    const orderMap = new Map(c.labelOrder.map((l,i) => [l, i]));
+    const indices = rawLabels.map((_,i) => i);
+    indices.sort((a,b) => {
+      const oa = orderMap.has(rawLabels[a]) ? orderMap.get(rawLabels[a]) : 9999;
+      const ob = orderMap.has(rawLabels[b]) ? orderMap.get(rawLabels[b]) : 9999;
+      return oa - ob;
+    });
+    rawLabels = indices.map(i => rawLabels[i]);
+    labels = indices.map(i => labels[i]);
+    datasets.forEach(ds => { ds.data = indices.map(i => ds.data[i]); if (Array.isArray(ds.backgroundColor) && ds.backgroundColor.length > 1) ds.backgroundColor = indices.map(i => ds.backgroundColor[i]); });
+  }
+
   const fontFamily = c.fontFamily||'Inter';
   const fontSize = c.fontSize||11;
   const axisCf = c.colFormats && c.colFormats[isHoriz ? '__axis_x' : '__axis_y'];
@@ -2695,6 +2710,57 @@ function renderChartWidget(w) {
     }
   });
   chartInstances[w.id]._rawLabels = rawLabels;
+
+  if (!isPie) {
+    let dragLabel = null, dragStartIdx = -1;
+    canvas.addEventListener('mousedown', function(e) {
+      if (e.button !== 0) return;
+      const chart = chartInstances[w.id]; if (!chart) return;
+      const axis = isHoriz ? chart.scales.y : chart.scales.x;
+      if (!axis) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left, y = e.clientY - rect.top;
+      const inLabelZone = isHoriz ? (x < axis.right && x > axis.left - 60) : (y > axis.top && y < axis.bottom + 40);
+      if (!inLabelZone) return;
+      let closest = -1, closestDist = Infinity;
+      for (let i = 0; i < rawLabels.length; i++) {
+        const pos = axis.getPixelForValue(i);
+        const dist = isHoriz ? Math.abs(y - pos) : Math.abs(x - pos);
+        if (dist < closestDist) { closestDist = dist; closest = i; }
+      }
+      if (closest < 0 || closestDist > 40) return;
+      dragLabel = rawLabels[closest]; dragStartIdx = closest;
+      canvas.style.cursor = 'grabbing';
+    });
+    canvas.addEventListener('mousemove', function(e) {
+      if (dragLabel === null) return;
+      canvas.style.cursor = 'grabbing';
+    });
+    const endDrag = function(e) {
+      if (dragLabel === null) return;
+      const chart = chartInstances[w.id]; if (!chart) { dragLabel = null; return; }
+      const axis = isHoriz ? chart.scales.y : chart.scales.x;
+      if (!axis) { dragLabel = null; return; }
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left, y = e.clientY - rect.top;
+      let closest = -1, closestDist = Infinity;
+      for (let i = 0; i < rawLabels.length; i++) {
+        const pos = axis.getPixelForValue(i);
+        const dist = isHoriz ? Math.abs(y - pos) : Math.abs(x - pos);
+        if (dist < closestDist) { closestDist = dist; closest = i; }
+      }
+      if (closest >= 0 && closest !== dragStartIdx) {
+        if (!c.labelOrder) c.labelOrder = [...rawLabels];
+        const item = c.labelOrder.splice(dragStartIdx, 1)[0];
+        c.labelOrder.splice(closest, 0, item);
+        renderChartWidget(w);
+      }
+      dragLabel = null; dragStartIdx = -1;
+      canvas.style.cursor = '';
+    };
+    canvas.addEventListener('mouseup', endDrag);
+    canvas.addEventListener('mouseleave', () => { if (dragLabel !== null) { dragLabel = null; dragStartIdx = -1; canvas.style.cursor = ''; } });
+  }
 
   canvas.oncontextmenu = function(e) {
     e.preventDefault();
@@ -3723,7 +3789,6 @@ function buildKpiSettingsHTML(w) {
       <div class="formula-wrap">
         <textarea class="formula-input" id="kpiFormulaInput" placeholder="e.g. [Net Net Spend] - [Out of Scope]&#10;Type [ to see column suggestions">${esc(c.formula||'')}</textarea>
         <div class="ac-dropdown" id="kpiFormulaAC"></div>
-        <div class="formula-preview"></div>
         <div class="formula-hint">Use [Column Name] for columns. Operators: + - * / %</div>
         <div class="formula-fn-bar">${fnBar}</div>
       </div>
@@ -4421,7 +4486,7 @@ function renderFormulaManager() {
     }
     return `<div class="fm-formula-card">
       <div class="fm-row"><label>Name</label><input type="text" value="${esc(f.name)}" onchange="updateGlobalFormula('${f.id}','name',this.value)" placeholder="e.g. Net Savings"></div>
-      <div class="fm-row"><label>Formula</label><textarea onchange="updateGlobalFormula('${f.id}','expr',this.value);renderFormulaManager()" placeholder="e.g. [Net Net Spend] - [Out of Scope]">${esc(f.expr)}</textarea></div>
+      <div class="fm-row"><label>Formula</label><div class="formula-wrap" style="position:relative;"><textarea class="formula-input gf-textarea" data-gfid="${f.id}" oninput="updateGlobalFormula('${f.id}','expr',this.value)" placeholder="e.g. [Net Net Spend] - [Out of Scope]">${esc(f.expr)}</textarea><div class="ac-dropdown gf-ac" data-gfid="${f.id}"></div></div></div>
       <div class="fm-row"><label>Notes</label><input type="text" value="${esc(f.description||'')}" onchange="updateGlobalFormula('${f.id}','description',this.value)" placeholder="Optional description"></div>
       <div style="display:flex;align-items:center;justify-content:space-between;">
         <div>${statusHtml}${previewHtml}</div>
@@ -4430,6 +4495,25 @@ function renderFormulaManager() {
       ${colHints ? '<div style="font-size:9px;color:var(--text-secondary);margin-top:6px;">Columns: '+colHints+(S.allCols.length>12?' ...':'')+'</div>' : ''}
     </div>`;
   }).join('');
+
+  setTimeout(() => {
+    body.querySelectorAll('.gf-textarea').forEach(ta => {
+      const dd = body.querySelector(`.gf-ac[data-gfid="${ta.dataset.gfid}"]`);
+      if (ta && dd) {
+        ta.addEventListener('input', () => { initFormulaAutocomplete(ta, dd); updateAutocomplete(); });
+        ta.addEventListener('focus', () => { initFormulaAutocomplete(ta, dd); });
+        ta.addEventListener('keydown', e => {
+          if (!dd.classList.contains('open')) return;
+          if (e.key==='ArrowDown'){e.preventDefault();acIdx=Math.min(acIdx+1,acItems.length-1);highlightAC();}
+          else if(e.key==='ArrowUp'){e.preventDefault();acIdx=Math.max(acIdx-1,0);highlightAC();}
+          else if(e.key==='Enter'&&acIdx>=0){e.preventDefault();selectAC(acIdx);}
+          else if(e.key==='Escape'){closeAC();}
+          else if(e.key==='Tab'&&acIdx>=0){e.preventDefault();selectAC(acIdx);}
+        });
+        ta.addEventListener('blur', () => setTimeout(closeAC, 150));
+      }
+    });
+  }, 50);
 }
 
 function resetDashboard() {
@@ -5011,12 +5095,12 @@ async function captureAndInsertWidget(widgetId,tabId){
   if(tabId!==origTab){ S.activeTabId=tabId; }
   rebuildFilters(); applyFilters(); renderAll();
   await new Promise(r=>setTimeout(r,500));
-  const wEl=document.querySelector(`.widget[data-id="${widgetId}"]`);
+  const wEl=document.getElementById(widgetId);
   let snapshot=null;
   if(wEl){
     try{ const c=await html2canvas(wEl,{scale:2,useCORS:true,backgroundColor:'#fff'}); snapshot=c.toDataURL('image/png'); }
     catch(e){ console.warn('Snapshot failed:',e); }
-  }
+  } else { console.warn('Widget element not found:', widgetId); }
   if(tabId!==origTab){ S.activeTabId=origTab; rebuildFilters(); applyFilters(); }
   mc.style.display='none'; pe.style.display='flex'; sw.style.display='none';
   renderAll();
@@ -5035,7 +5119,7 @@ async function refreshSnapshot(){
   if(el.tabId) S.activeTabId=el.tabId;
   rebuildFilters(); applyFilters(); renderAll();
   await new Promise(r=>setTimeout(r,500));
-  const wEl=document.querySelector(`.widget[data-id="${el.widgetId}"]`);
+  const wEl=document.getElementById(el.widgetId);
   if(wEl){ try{ const c=await html2canvas(wEl,{scale:2,useCORS:true,backgroundColor:'#fff'}); presPush(); el.snapshot=c.toDataURL('image/png'); showToast('Snapshot refreshed'); }catch(e){ showToast('Snapshot capture failed'); } }
   else { showToast('Widget not found - it may have been deleted'); }
   S.activeTabId=origTab; rebuildFilters(); applyFilters();
