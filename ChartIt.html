@@ -1231,18 +1231,25 @@ function evalFormulaOnRows(formulaStr, rows, agg) {
     return rows.map(r => evalAST(ast, r));
   }
 
-  const perRow = rows.map(r => evalAST(ast, r));
-  const valid = perRow.filter(v => isFinite(v));
-  if (!valid.length) return 0;
+  const colRefs = [];
+  (function walk(n){ if(n.type==='col') colRefs.push(n.value); if(n.left) walk(n.left); if(n.right) walk(n.right); if(n.args) n.args.forEach(walk); })(ast);
 
-  switch(agg) {
-    case 'sum': return valid.reduce((a,b) => a+b, 0);
-    case 'avg': return valid.reduce((a,b) => a+b, 0) / valid.length;
-    case 'min': return Math.min(...valid);
-    case 'max': return Math.max(...valid);
-    case 'count': return valid.length;
-    default: return valid.reduce((a,b) => a+b, 0);
+  function aggCol(colName, fn) {
+    const vals = rows.map(r => { const v = parseFloat(r[colName]); return isFinite(v) ? v : 0; });
+    if (!vals.length) return 0;
+    switch(fn) {
+      case 'avg': return vals.reduce((a,b)=>a+b,0) / vals.length;
+      case 'min': return Math.min(...vals);
+      case 'max': return Math.max(...vals);
+      case 'count': return vals.length;
+      default: return vals.reduce((a,b)=>a+b,0);
+    }
   }
+
+  const virtualRow = {};
+  colRefs.forEach(c => { virtualRow[c] = aggCol(c, agg); });
+  const result = evalAST(ast, virtualRow);
+  return isFinite(result) ? result : 0;
 }
 
 function validateFormula(formulaStr) {
@@ -1268,19 +1275,26 @@ function formulaGroupBy(rows, dim, formulaStr, agg, topN) {
   const tokens = tokenizeFormula(formulaStr);
   const ast = parseFormula(tokens);
 
+  const colRefs = [];
+  (function walk(n){ if(n.type==='col') colRefs.push(n.value); if(n.left) walk(n.left); if(n.right) walk(n.right); if(n.args) n.args.forEach(walk); })(ast);
+
   const groups = {};
   rows.forEach(r => { const k = r[dim] || '(blank)'; (groups[k] = groups[k] || []).push(r); });
 
   const aggFnLocal = (arr) => {
-    const vals = arr.map(r => evalAST(ast, r)).filter(v => isFinite(v));
-    if (!vals.length) return 0;
-    switch(agg) {
-      case 'sum': return vals.reduce((a,b) => a+b, 0);
-      case 'avg': return vals.reduce((a,b) => a+b, 0) / vals.length;
-      case 'min': return Math.min(...vals);
-      case 'max': return Math.max(...vals);
-      default: return vals.reduce((a,b) => a+b, 0);
-    }
+    const virtualRow = {};
+    colRefs.forEach(c => {
+      const vals = arr.map(r => { const v = parseFloat(r[c]); return isFinite(v) ? v : 0; });
+      if (!vals.length) { virtualRow[c] = 0; return; }
+      switch(agg) {
+        case 'avg': virtualRow[c] = vals.reduce((a,b)=>a+b,0) / vals.length; break;
+        case 'min': virtualRow[c] = Math.min(...vals); break;
+        case 'max': virtualRow[c] = Math.max(...vals); break;
+        default: virtualRow[c] = vals.reduce((a,b)=>a+b,0); break;
+      }
+    });
+    const result = evalAST(ast, virtualRow);
+    return isFinite(result) ? result : 0;
   };
 
   const result = Object.entries(groups).map(([k,v]) => ({ label:k, value:aggFnLocal(v), count:v.length }));
