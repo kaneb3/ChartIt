@@ -9,6 +9,8 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto:wght@400;500;700&family=Open+Sans:wght@400;600;700&family=Lato:wght@400;700&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -374,6 +376,77 @@ input[type="file"] { display:none; }
 .theme-swatch .sw-body { height:70%; width:100%; display:flex; align-items:center; justify-content:center; }
 .theme-swatch .sw-label { font-size:7px; font-weight:600; text-align:center; line-height:1.1; }
 
+/* ═══════════ PRESENTATION MODE ═══════════ */
+.mode-toggle{display:inline-flex;background:#e8e4df;border-radius:6px;padding:2px;gap:1px;}
+.mode-btn{padding:5px 14px;border:none;background:transparent;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer;color:var(--text-secondary);transition:all .15s;}
+.mode-btn.active{background:#fff;color:var(--text-primary);box-shadow:0 1px 3px rgba(0,0,0,.1);}
+.pres-editor{display:flex;height:calc(100vh - 50px);overflow:hidden;position:relative;}
+.pres-slide-strip{width:190px;min-width:190px;background:#f0ece7;border-right:1px solid var(--border);overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:8px;}
+.pres-slide-thumb{position:relative;cursor:pointer;border:2px solid transparent;border-radius:4px;overflow:hidden;transition:border-color .15s;}
+.pres-slide-thumb.active{border-color:var(--accent);}
+.pres-slide-thumb:hover{border-color:#c4bdb4;}
+.pres-slide-thumb-inner{width:100%;aspect-ratio:16/9;background:#fff;position:relative;overflow:hidden;font-size:0;}
+.pres-slide-thumb-num{position:absolute;bottom:2px;right:4px;font-size:9px;color:var(--text-secondary);font-weight:600;background:rgba(255,255,255,.7);padding:0 3px;border-radius:2px;}
+.pres-slide-add{width:100%;padding:6px;border:1px dashed var(--border);border-radius:4px;background:transparent;cursor:pointer;font-size:12px;color:var(--text-secondary);text-align:center;}
+.pres-slide-add:hover{border-color:var(--accent);color:var(--accent);}
+.pres-canvas-wrap{flex:1;display:flex;flex-direction:column;align-items:center;background:#e0dbd4;overflow:auto;padding:20px;position:relative;}
+.pres-toolbar{display:flex;align-items:center;gap:6px;padding:6px 12px;background:#fff;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,.1);margin-bottom:12px;flex-shrink:0;flex-wrap:wrap;}
+.pres-toolbar button,.pres-toolbar select{font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:#fff;cursor:pointer;}
+.pres-toolbar button:hover{background:#f5f3f0;}
+.pres-toolbar .tb-sep{width:1px;height:20px;background:var(--border);}
+.pres-canvas-container{position:relative;box-shadow:0 4px 20px rgba(0,0,0,.15);flex-shrink:0;}
+.pres-canvas{position:relative;background:#fff;overflow:hidden;}
+.slide-el{position:absolute;cursor:move;user-select:none;box-sizing:border-box;}
+.slide-el.selected{outline:2px solid var(--accent);outline-offset:0;}
+.slide-el .el-resize{position:absolute;width:8px;height:8px;background:var(--accent);border:1px solid #fff;border-radius:50%;z-index:5;}
+.slide-el .el-resize.nw{top:-4px;left:-4px;cursor:nw-resize;}
+.slide-el .el-resize.ne{top:-4px;right:-4px;cursor:ne-resize;}
+.slide-el .el-resize.sw{bottom:-4px;left:-4px;cursor:sw-resize;}
+.slide-el .el-resize.se{bottom:-4px;right:-4px;cursor:se-resize;}
+.slide-el-text{padding:8px;white-space:pre-wrap;word-break:break-word;outline:none;width:100%;height:100%;box-sizing:border-box;overflow:hidden;}
+.slide-el-widget-snap{width:100%;height:100%;object-fit:contain;pointer-events:none;}
+.slide-el-shape{width:100%;height:100%;box-sizing:border-box;}
+.pres-props{width:260px;min-width:260px;background:#fff;border-left:1px solid var(--border);overflow-y:auto;padding:12px;font-size:12px;}
+.pres-props h4{font-size:12px;margin:12px 0 6px;color:var(--text-primary);font-weight:600;border-bottom:1px solid var(--border);padding-bottom:4px;}
+.pres-props h4:first-child{margin-top:0;}
+.pres-props label{display:block;margin:3px 0 1px;font-size:11px;color:var(--text-secondary);font-weight:500;}
+.pres-props input[type=text],.pres-props input[type=number],.pres-props select,.pres-props textarea{width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;box-sizing:border-box;}
+.pres-props .prop-row{display:flex;gap:6px;align-items:center;margin-bottom:4px;}
+.pres-props .prop-row>label{flex:0 0 65px;}
+.pres-props .prop-row>*:last-child{flex:1;}
+.pres-props .prop-btn-row{display:flex;gap:4px;margin:6px 0;flex-wrap:wrap;}
+.pres-props .prop-btn-row button{font-size:10px;padding:3px 7px;border:1px solid var(--border);background:#fff;border-radius:4px;cursor:pointer;}
+.pres-props .prop-btn-row button:hover{background:#f5f3f0;}
+.pres-view-overlay{position:fixed;inset:0;background:#000;z-index:100000;display:none;align-items:center;justify-content:center;flex-direction:column;}
+.pres-view-overlay.active{display:flex;}
+.pres-view-slide{position:relative;background:#fff;overflow:hidden;}
+.pres-view-progress{position:fixed;bottom:0;left:0;height:3px;background:var(--accent);transition:width .3s;z-index:100001;}
+.slide-ctx-menu{position:fixed;background:#fff;border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.15);z-index:10000;min-width:150px;padding:4px 0;}
+.slide-ctx-item{padding:6px 14px;font-size:12px;cursor:pointer;display:flex;align-items:center;gap:6px;}
+.slide-ctx-item:hover{background:#f5f3f0;}
+.slide-ctx-item.danger{color:var(--danger);}
+.widget-picker-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:10001;display:flex;align-items:center;justify-content:center;}
+.widget-picker{background:#fff;border-radius:10px;padding:20px;max-width:600px;width:90%;max-height:70vh;overflow-y:auto;box-shadow:0 8px 30px rgba(0,0,0,.2);}
+.widget-picker h3{margin:0 0 12px;font-size:16px;}
+.widget-picker-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;}
+.widget-picker-item{border:1px solid var(--border);border-radius:6px;padding:10px;cursor:pointer;text-align:center;transition:all .15s;}
+.widget-picker-item:hover{border-color:var(--accent);background:#faf8f5;}
+.widget-picker-item .wpi-type{font-size:10px;color:var(--text-secondary);text-transform:uppercase;font-weight:600;}
+.widget-picker-item .wpi-name{font-size:12px;margin-top:4px;font-weight:500;}
+.widget-picker-close{margin-top:12px;text-align:right;}
+.align-toolbar{display:flex;gap:2px;}
+.align-toolbar button{width:26px;height:24px;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);background:#fff;border-radius:3px;cursor:pointer;font-size:10px;padding:0;}
+.align-toolbar button:hover{background:#f0ece7;}
+.tpl-picker-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:10002;display:flex;align-items:center;justify-content:center;}
+.tpl-picker{background:#fff;border-radius:10px;padding:20px;max-width:500px;width:90%;box-shadow:0 8px 30px rgba(0,0,0,.2);}
+.tpl-picker h3{margin:0 0 12px;font-size:16px;}
+.tpl-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
+.tpl-item{border:1px solid var(--border);border-radius:4px;padding:6px;cursor:pointer;text-align:center;font-size:10px;transition:border-color .15s;}
+.tpl-item:hover{border-color:var(--accent);}
+.tpl-item .tpl-preview{width:100%;aspect-ratio:16/9;background:#f5f3f0;border-radius:2px;margin-bottom:4px;display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--text-secondary);}
+.pres-notes-wrap{width:100%;background:#fff;border-top:1px solid var(--border);flex-shrink:0;overflow:hidden;transition:height .2s;}
+.pres-notes-toggle{padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer;border:none;background:none;color:var(--text-secondary);width:100%;text-align:left;}
+.pres-notes-textarea{width:100%;height:80px;border:none;padding:4px 12px;font-size:12px;resize:none;outline:none;font-family:inherit;box-sizing:border-box;}
 
 </style>
 
@@ -453,6 +526,10 @@ input[type="file"] { display:none; }
 <div class="main">
   <div class="main-header">
     <h2>ChartIt</h2>
+    <div class="mode-toggle">
+      <button class="mode-btn active" id="modeBtnDash" onclick="switchAppMode('dashboard')">Dashboard</button>
+      <button class="mode-btn" id="modeBtnPres" onclick="switchAppMode('presentation')">Presentation</button>
+    </div>
     <div class="header-controls">
       <div class="tools-dropdown-wrap" id="toolsDropdown">
         <button class="tools-btn" onclick="toggleToolsMenu()">Tools <span class="tools-arrow">▼</span></button>
@@ -485,6 +562,29 @@ input[type="file"] { display:none; }
       <button class="fab-add" onclick="showAddMenuAt(event)" title="Add Widget">+</button>
     </div>
   </div>
+  <!-- Presentation Editor -->
+  <div class="pres-editor" id="presEditor" style="display:none;">
+    <div class="pres-slide-strip" id="presSlideStrip"></div>
+    <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;">
+      <div class="pres-canvas-wrap" id="presCanvasWrap">
+        <div class="pres-toolbar" id="presToolbar"></div>
+        <div class="pres-canvas-container" id="presCanvasContainer">
+          <div class="pres-canvas" id="presCanvas"></div>
+        </div>
+      </div>
+      <div class="pres-notes-wrap" id="presNotesWrap" style="height:28px;">
+        <button class="pres-notes-toggle" id="presNotesToggle" onclick="togglePresNotes()">Speaker Notes ▲</button>
+        <textarea class="pres-notes-textarea" id="presNotesText" placeholder="Add speaker notes..." oninput="updateSlideNotes(this.value)"></textarea>
+      </div>
+    </div>
+    <div class="pres-props" id="presProps"><div id="presPropsContent"></div></div>
+  </div>
+</div>
+
+<!-- Presentation View Overlay -->
+<div class="pres-view-overlay" id="presViewOverlay">
+  <div class="pres-view-slide" id="presViewSlide"></div>
+  <div class="pres-view-progress" id="presViewProgress"></div>
 </div>
 
 
@@ -4063,7 +4163,10 @@ function saveDashboardToFile(includeData) {
     dashBgColor: S.dashBgColor || '#f5f3f0',
     globalFormulas: S.globalFormulas || [],
     tableVisibleCols: S.tableVisCols,
-    filesMeta: filesMeta
+    filesMeta: filesMeta,
+    slides: S.slides || [],
+    activeSlideId: S.activeSlideId,
+    presZoom: S.presZoom
   };
 
   if (includeData && S.files.length) {
@@ -4171,6 +4274,14 @@ function loadDashboardFromFile(file) {
 
       wid = Math.max(...S.widgets.map(w => parseInt(w.id.replace('w','')) || 0), 0) + 1;
       if (data.tableVisibleCols) S.tableVisCols = data.tableVisibleCols;
+
+      if (data.slides && data.slides.length) {
+        S.slides = data.slides;
+        S.activeSlideId = data.activeSlideId || S.slides[0].id;
+        S.presZoom = data.presZoom || 0.75;
+        if (typeof slideIdC !== 'undefined') { slideIdC = Math.max(0, ...S.slides.map(s => parseInt(s.id.replace('sl','')) || 0)) + 1; }
+        if (typeof slideElIdC !== 'undefined') { S.slides.forEach(s => s.elements.forEach(el => { const n = parseInt(el.id.replace('se','')) || 0; if (n >= slideElIdC) slideElIdC = n + 1; })); }
+      }
 
       // Restore data if included
       if (data.includesData && data.filesData && data.filesData.length) {
@@ -4482,6 +4593,617 @@ renderAll();
 document.addEventListener('click', e => {
   if (!e.target.closest('#toolsDropdown')) closeToolsMenu();
 });
+
+/* ═══════════════════════════════════════════
+   PRESENTATION BUILDER
+   ═══════════════════════════════════════════ */
+const SLIDE_W = 960, SLIDE_H = 540;
+let slideIdC = 0, slideElIdC = 0;
+const presNid = () => 'sl'+(slideIdC++);
+const presEid = () => 'se'+(slideElIdC++);
+
+if (!S.slides) S.slides = [];
+if (!S.activeSlideId) S.activeSlideId = null;
+if (!S.appMode) S.appMode = 'dashboard';
+if (!S.presZoom) S.presZoom = 0.75;
+let selectedElId = null;
+let presUndoStack = [], presRedoStack = [];
+
+function presSnap(){ return JSON.parse(JSON.stringify(S.slides)); }
+function presPush(){ presUndoStack.push(presSnap()); if(presUndoStack.length>50) presUndoStack.shift(); presRedoStack=[]; }
+function presUndo(){ if(!presUndoStack.length) return; presRedoStack.push(presSnap()); S.slides=presUndoStack.pop(); fixActiveSlide(); renderPresEditor(); }
+function presRedo(){ if(!presRedoStack.length) return; presUndoStack.push(presSnap()); S.slides=presRedoStack.pop(); fixActiveSlide(); renderPresEditor(); }
+function fixActiveSlide(){ if(S.activeSlideId && !S.slides.find(s=>s.id===S.activeSlideId)) S.activeSlideId=S.slides.length?S.slides[0].id:null; }
+
+function makeSlide(tplKey){
+  const s = { id:presNid(), elements:[], background:{type:'solid',color:'#ffffff'}, transition:'none', notes:'', hidden:false };
+  if(tplKey && SLIDE_TEMPLATES[tplKey]){ const t=SLIDE_TEMPLATES[tplKey]; s.elements=t.elements.map(e=>makeSlideEl(e.type,{...e})); if(t.background) s.background={...t.background}; }
+  return s;
+}
+function makeSlideEl(type, p={}){
+  const base = { id:presEid(), type, x:p.x??50, y:p.y??50, w:p.w??300, h:p.h??200, z:p.z??1, rotation:p.rotation??0, opacity:p.opacity??1, locked:false };
+  delete p.x; delete p.y; delete p.w; delete p.h; delete p.z; delete p.rotation; delete p.opacity;
+  return {...base, ...p};
+}
+
+const SLIDE_TEMPLATES = {
+  blank:{name:'Blank',icon:'▢',elements:[]},
+  title:{name:'Title',icon:'T',elements:[
+    {type:'text',x:80,y:180,w:800,h:80,text:'Presentation Title',fontSize:44,fontWeight:'700',textAlign:'center',fontColor:'#2D231C'},
+    {type:'text',x:180,y:280,w:600,h:40,text:'Subtitle text',fontSize:20,fontWeight:'400',textAlign:'center',fontColor:'#8B7E74'}
+  ]},
+  titleContent:{name:'Title+Body',icon:'☰',elements:[
+    {type:'text',x:40,y:20,w:880,h:50,text:'Slide Title',fontSize:32,fontWeight:'700',textAlign:'left',fontColor:'#2D231C'},
+    {type:'shape',x:40,y:75,w:880,h:3,shapeType:'rect',fill:'#D4A574',stroke:'none',strokeWidth:0}
+  ]},
+  twoCol:{name:'Two Column',icon:'❘❘',elements:[
+    {type:'text',x:40,y:20,w:880,h:50,text:'Comparison',fontSize:32,fontWeight:'700',textAlign:'center',fontColor:'#2D231C'},
+    {type:'shape',x:30,y:85,w:435,h:430,shapeType:'rect',fill:'#f9f7f4',stroke:'#e0d8cf',strokeWidth:1},
+    {type:'shape',x:495,y:85,w:435,h:430,shapeType:'rect',fill:'#f9f7f4',stroke:'#e0d8cf',strokeWidth:1}
+  ]},
+  chartGrid:{name:'2×2 Grid',icon:'⊞',elements:[
+    {type:'shape',x:20,y:20,w:450,h:245,shapeType:'rect',fill:'#f9f7f4',stroke:'#e0d8cf',strokeWidth:1},
+    {type:'shape',x:490,y:20,w:450,h:245,shapeType:'rect',fill:'#f9f7f4',stroke:'#e0d8cf',strokeWidth:1},
+    {type:'shape',x:20,y:280,w:450,h:240,shapeType:'rect',fill:'#f9f7f4',stroke:'#e0d8cf',strokeWidth:1},
+    {type:'shape',x:490,y:280,w:450,h:240,shapeType:'rect',fill:'#f9f7f4',stroke:'#e0d8cf',strokeWidth:1}
+  ]},
+  kpiRow:{name:'KPI+Chart',icon:'▤',elements:[
+    {type:'shape',x:20,y:20,w:220,h:90,shapeType:'rect',fill:'#f9f7f4',stroke:'#e0d8cf',strokeWidth:1},
+    {type:'shape',x:260,y:20,w:220,h:90,shapeType:'rect',fill:'#f9f7f4',stroke:'#e0d8cf',strokeWidth:1},
+    {type:'shape',x:500,y:20,w:220,h:90,shapeType:'rect',fill:'#f9f7f4',stroke:'#e0d8cf',strokeWidth:1},
+    {type:'shape',x:740,y:20,w:200,h:90,shapeType:'rect',fill:'#f9f7f4',stroke:'#e0d8cf',strokeWidth:1},
+    {type:'shape',x:20,y:130,w:920,h:390,shapeType:'rect',fill:'#f9f7f4',stroke:'#e0d8cf',strokeWidth:1}
+  ]},
+  fullChart:{name:'Full Chart',icon:'▣',elements:[
+    {type:'text',x:30,y:15,w:900,h:40,text:'Chart Title',fontSize:24,fontWeight:'700',textAlign:'left',fontColor:'#2D231C'}
+  ]},
+  section:{name:'Section',icon:'◼',elements:[
+    {type:'text',x:80,y:200,w:800,h:80,text:'Section Title',fontSize:48,fontWeight:'700',textAlign:'center',fontColor:'#ffffff'}
+  ],background:{type:'solid',color:'#2D231C'}}
+};
+
+function switchAppMode(mode){
+  S.appMode = mode;
+  document.getElementById('modeBtnDash').classList.toggle('active',mode==='dashboard');
+  document.getElementById('modeBtnPres').classList.toggle('active',mode==='presentation');
+  const mc=document.getElementById('mainContent'), pe=document.getElementById('presEditor'), sw=document.querySelector('.sidebar-wrap'), sp=document.getElementById('settingsPanel');
+  if(mode==='dashboard'){ mc.style.display=''; pe.style.display='none'; sw.style.display=''; }
+  else { mc.style.display='none'; pe.style.display='flex'; sw.style.display='none'; sp.classList.remove('open');
+    if(!S.slides.length) addPresSlide('blank');
+    renderPresEditor();
+  }
+}
+
+function activeSlide(){ return S.slides.find(s=>s.id===S.activeSlideId)||S.slides[0]||null; }
+function visibleSlides(){ return S.slides.filter(s=>!s.hidden); }
+
+function addPresSlide(tplKey, afterId){
+  presPush();
+  const slide=makeSlide(tplKey||'blank');
+  if(afterId){ const i=S.slides.findIndex(s=>s.id===afterId); S.slides.splice(i+1,0,slide); }
+  else S.slides.push(slide);
+  S.activeSlideId=slide.id; selectedElId=null;
+  renderPresEditor();
+  return slide;
+}
+function deletePresSlide(id){ if(S.slides.length<=1) return; presPush(); const i=S.slides.findIndex(s=>s.id===id); S.slides.splice(i,1); if(S.activeSlideId===id) S.activeSlideId=S.slides[Math.min(i,S.slides.length-1)].id; selectedElId=null; renderPresEditor(); }
+function dupPresSlide(id){ presPush(); const src=S.slides.find(s=>s.id===id); if(!src) return; const c=JSON.parse(JSON.stringify(src)); c.id=presNid(); c.elements.forEach(e=>e.id=presEid()); const i=S.slides.findIndex(s=>s.id===id); S.slides.splice(i+1,0,c); S.activeSlideId=c.id; selectedElId=null; renderPresEditor(); }
+function reorderPresSlide(from,to){ if(from===to)return; presPush(); const[s]=S.slides.splice(from,1); S.slides.splice(to,0,s); renderPresEditor(); }
+function moveSlideUp(id){ const i=S.slides.findIndex(s=>s.id===id); if(i>0) reorderPresSlide(i,i-1); }
+function moveSlideDown(id){ const i=S.slides.findIndex(s=>s.id===id); if(i<S.slides.length-1) reorderPresSlide(i,i+1); }
+function toggleSlideHidden(id){ const s=S.slides.find(sl=>sl.id===id); if(s){presPush();s.hidden=!s.hidden;renderPresEditor();} }
+
+function renderPresEditor(){ renderSlideStrip(); renderSlideCanvas(); renderPresToolbar(); renderPresProps(); renderPresNotes(); }
+
+function renderSlideStrip(){
+  const strip=document.getElementById('presSlideStrip'); if(!strip) return; strip.innerHTML='';
+  S.slides.forEach((slide,idx)=>{
+    const th=document.createElement('div'); th.className='pres-slide-thumb'+(slide.id===S.activeSlideId?' active':'');
+    th.draggable=true;
+    th.onclick=()=>{ S.activeSlideId=slide.id; selectedElId=null; renderPresEditor(); };
+    th.oncontextmenu=(e)=>{ e.preventDefault(); showSlideCtxMenu(e,slide.id); };
+    th.ondragstart=(e)=>{ e.dataTransfer.setData('text/plain',''+idx); };
+    th.ondragover=(e)=>e.preventDefault();
+    th.ondrop=(e)=>{ e.preventDefault(); reorderPresSlide(+e.dataTransfer.getData('text/plain'),idx); };
+    const inner=document.createElement('div'); inner.className='pres-slide-thumb-inner';
+    inner.style.background=slide.background.color||'#fff';
+    if(slide.hidden) inner.style.opacity='0.4';
+    renderMiniSlide(inner,slide);
+    const num=document.createElement('div'); num.className='pres-slide-thumb-num'; num.textContent=''+(idx+1);
+    inner.appendChild(num); th.appendChild(inner); strip.appendChild(th);
+  });
+  const addBtn=document.createElement('button'); addBtn.className='pres-slide-add'; addBtn.textContent='+ Add Slide';
+  addBtn.onclick=()=>showTplPicker(); strip.appendChild(addBtn);
+}
+
+function renderMiniSlide(container,slide){
+  const scale=container.offsetWidth?(container.offsetWidth/SLIDE_W):0.18;
+  slide.elements.forEach(el=>{
+    const d=document.createElement('div');
+    d.style.cssText=`position:absolute;left:${el.x*scale}px;top:${el.y*scale}px;width:${el.w*scale}px;height:${el.h*scale}px;overflow:hidden;opacity:${el.opacity};`;
+    if(el.rotation) d.style.transform=`rotate(${el.rotation}deg)`;
+    if(el.type==='text'){ d.style.fontSize=Math.max(2,(el.fontSize||16)*scale)+'px'; d.style.color=el.fontColor||'#2D231C'; d.style.fontWeight=el.fontWeight||'400'; d.textContent=(el.text||'').substring(0,30); }
+    else if(el.type==='shape'){ if(el.shapeType==='circle') d.style.borderRadius='50%'; d.style.background=el.fill||'#ddd'; if(el.stroke&&el.stroke!=='none') d.style.border=`1px solid ${el.stroke}`; }
+    else if((el.type==='widget-ref'||el.type==='image')&&(el.snapshot||el.src)){ const img=document.createElement('img'); img.src=el.snapshot||el.src; img.style.cssText='width:100%;height:100%;object-fit:contain;'; d.appendChild(img); }
+    container.appendChild(d);
+  });
+}
+
+function renderSlideCanvas(){
+  const canvas=document.getElementById('presCanvas'), cont=document.getElementById('presCanvasContainer');
+  if(!canvas||!cont) return;
+  const slide=activeSlide(); if(!slide) return;
+  const z=S.presZoom||0.75, w=SLIDE_W*z, h=SLIDE_H*z;
+  cont.style.width=w+'px'; cont.style.height=h+'px';
+  canvas.style.width=w+'px'; canvas.style.height=h+'px';
+  canvas.style.background=slide.background.color||'#fff';
+  canvas.style.backgroundImage=''; canvas.style.backgroundSize=''; canvas.style.backgroundPosition='';
+  if(slide.background.type==='gradient'&&slide.background.gradient) canvas.style.background=slide.background.gradient;
+  if(slide.background.type==='image'&&slide.background.image){ canvas.style.backgroundImage=`url(${slide.background.image})`; canvas.style.backgroundSize='cover'; canvas.style.backgroundPosition='center'; }
+  canvas.innerHTML='';
+  const sorted=[...slide.elements].sort((a,b)=>(a.z||0)-(b.z||0));
+  sorted.forEach(el=>{
+    const d=document.createElement('div'); d.className='slide-el'+(el.id===selectedElId?' selected':''); d.dataset.elId=el.id;
+    d.style.cssText=`left:${el.x*z}px;top:${el.y*z}px;width:${el.w*z}px;height:${el.h*z}px;opacity:${el.opacity};`;
+    if(el.rotation) d.style.transform=`rotate(${el.rotation}deg)`;
+    renderElContent(d,el,z);
+    d.onmousedown=(e)=>{ if(e.target.classList.contains('el-resize')) return; e.stopPropagation(); selectEl(el.id); startElDrag(e,el,z); };
+    if(el.id===selectedElId){ ['nw','ne','sw','se'].forEach(c=>{ const rh=document.createElement('div'); rh.className=`el-resize ${c}`; rh.onmousedown=(e)=>{e.stopPropagation();startElResize(e,el,c,z);}; d.appendChild(rh); }); }
+    if(el.type==='text') d.ondblclick=()=>startTextEdit(d,el,z);
+    canvas.appendChild(d);
+  });
+  canvas.onmousedown=(e)=>{ if(e.target===canvas){selectedElId=null;renderPresEditor();} };
+}
+
+function renderElContent(container,el,z){
+  if(el.type==='text'){
+    const d=document.createElement('div'); d.className='slide-el-text';
+    d.style.cssText=`font-size:${(el.fontSize||16)*z}px;font-family:${el.fontFamily||'Inter'};font-weight:${el.fontWeight||'400'};color:${el.fontColor||'#2D231C'};text-align:${el.textAlign||'left'};`;
+    if(el.fontStyle==='italic') d.style.fontStyle='italic';
+    if(el.textDecoration==='underline') d.style.textDecoration='underline';
+    if(el.bgColor&&el.bgColor!=='transparent') d.style.background=el.bgColor;
+    if(el.lineHeight) d.style.lineHeight=el.lineHeight;
+    d.textContent=el.text||'Text'; container.appendChild(d);
+  } else if(el.type==='widget-ref'){
+    if(el.snapshot){ const img=document.createElement('img'); img.className='slide-el-widget-snap'; img.src=el.snapshot; container.appendChild(img); }
+    else container.innerHTML=`<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#999;font-size:${12*z}px;">Widget: ${el.widgetId||'?'}</div>`;
+  } else if(el.type==='shape'){ renderShapeEl(container,el,z);
+  } else if(el.type==='image'){
+    if(el.src){ const img=document.createElement('img'); img.className='slide-el-widget-snap'; img.src=el.src; if(el.borderRadius) img.style.borderRadius=el.borderRadius+'px'; container.appendChild(img); }
+  }
+}
+
+function renderShapeEl(container,el,z){
+  if(el.shapeType==='line'||el.shapeType==='arrow'){
+    const ns='http://www.w3.org/2000/svg';
+    const svg=document.createElementNS(ns,'svg'); svg.setAttribute('viewBox',`0 0 ${el.w} ${el.h}`); svg.style.cssText='width:100%;height:100%;';
+    if(el.shapeType==='arrow'){ const defs=document.createElementNS(ns,'defs'); const mk=document.createElementNS(ns,'marker'); mk.setAttribute('id','ah-'+el.id); mk.setAttribute('markerWidth','10'); mk.setAttribute('markerHeight','7'); mk.setAttribute('refX','10'); mk.setAttribute('refY','3.5'); mk.setAttribute('orient','auto'); const pg=document.createElementNS(ns,'polygon'); pg.setAttribute('points','0 0, 10 3.5, 0 7'); pg.setAttribute('fill',el.stroke||'#2D231C'); mk.appendChild(pg); defs.appendChild(mk); svg.appendChild(defs); }
+    const ln=document.createElementNS(ns,'line'); ln.setAttribute('x1','0'); ln.setAttribute('y1',''+el.h/2); ln.setAttribute('x2',''+el.w); ln.setAttribute('y2',''+el.h/2);
+    ln.setAttribute('stroke',el.stroke||'#2D231C'); ln.setAttribute('stroke-width',''+(el.strokeWidth||2));
+    if(el.shapeType==='arrow') ln.setAttribute('marker-end',`url(#ah-${el.id})`);
+    svg.appendChild(ln); container.appendChild(svg);
+  } else {
+    const d=document.createElement('div'); d.className='slide-el-shape';
+    d.style.background=el.fill||'transparent';
+    if(el.stroke&&el.stroke!=='none') d.style.border=`${el.strokeWidth||1}px solid ${el.stroke}`;
+    if(el.shapeType==='circle') d.style.borderRadius='50%'; else d.style.borderRadius=(el.borderRadius||0)+'px';
+    if(el.shadow) d.style.boxShadow='0 2px 8px rgba(0,0,0,.1)';
+    container.appendChild(d);
+  }
+}
+
+function selectEl(id){ selectedElId=id; renderPresEditor(); }
+
+function startElDrag(e,el,z){
+  const sx=e.clientX,sy=e.clientY,ox=el.x,oy=el.y; let moved=false;
+  function onM(ev){ el.x=Math.round(ox+(ev.clientX-sx)/z); el.y=Math.round(oy+(ev.clientY-sy)/z); moved=true; renderSlideCanvas(); }
+  function onU(){ document.removeEventListener('mousemove',onM); document.removeEventListener('mouseup',onU); if(moved){presPush();renderPresProps();renderSlideStrip();} }
+  document.addEventListener('mousemove',onM); document.addEventListener('mouseup',onU);
+}
+function startElResize(e,el,corner,z){
+  const sx=e.clientX,sy=e.clientY,ox=el.x,oy=el.y,ow=el.w,oh=el.h;
+  function onM(ev){ const dx=(ev.clientX-sx)/z, dy=(ev.clientY-sy)/z;
+    if(corner.includes('e')) el.w=Math.max(20,Math.round(ow+dx));
+    if(corner.includes('w')){el.x=Math.round(ox+dx);el.w=Math.max(20,Math.round(ow-dx));}
+    if(corner.includes('s')) el.h=Math.max(20,Math.round(oh+dy));
+    if(corner.includes('n')){el.y=Math.round(oy+dy);el.h=Math.max(20,Math.round(oh-dy));}
+    renderSlideCanvas();
+  }
+  function onU(){ document.removeEventListener('mousemove',onM); document.removeEventListener('mouseup',onU); presPush(); renderPresProps(); renderSlideStrip(); }
+  document.addEventListener('mousemove',onM); document.addEventListener('mouseup',onU);
+}
+
+function startTextEdit(elDiv,el,z){
+  const te=elDiv.querySelector('.slide-el-text'); if(!te) return;
+  te.contentEditable='true'; te.focus();
+  const sel=window.getSelection(), rng=document.createRange(); rng.selectNodeContents(te); sel.removeAllRanges(); sel.addRange(rng);
+  te.onblur=()=>{ te.contentEditable='false'; presPush(); el.text=te.textContent; renderSlideStrip(); };
+  te.onkeydown=(e)=>{ if(e.key==='Escape') te.blur(); e.stopPropagation(); };
+}
+
+function renderPresToolbar(){
+  const tb=document.getElementById('presToolbar'); if(!tb) return;
+  const slide=activeSlide(); const sIdx=S.slides.indexOf(slide); const total=S.slides.length;
+  tb.innerHTML=`
+    <button onclick="addSlideText()" title="Add Text">T</button>
+    <button onclick="showWidgetPicker()" title="Insert Widget">📊</button>
+    <button onclick="addSlideShape('rect')" title="Rectangle">▭</button>
+    <button onclick="addSlideShape('circle')" title="Circle">○</button>
+    <button onclick="addSlideShape('line')" title="Line">─</button>
+    <button onclick="addSlideShape('arrow')" title="Arrow">→</button>
+    <button onclick="addSlideImage()" title="Image">🖼</button>
+    <div class="tb-sep"></div>
+    <button onclick="presUndo()" title="Undo (Ctrl+Z)">↶</button>
+    <button onclick="presRedo()" title="Redo (Ctrl+Y)">↷</button>
+    <div class="tb-sep"></div>
+    <select onchange="S.presZoom=+this.value;renderSlideCanvas();" title="Zoom">
+      <option value="0.5" ${S.presZoom===0.5?'selected':''}>50%</option>
+      <option value="0.75" ${S.presZoom===0.75?'selected':''}>75%</option>
+      <option value="1" ${S.presZoom===1?'selected':''}>100%</option>
+      <option value="1.25" ${S.presZoom===1.25?'selected':''}>125%</option>
+    </select>
+    <div class="tb-sep"></div>
+    <span style="font-size:11px;color:var(--text-secondary);">Slide ${sIdx+1} of ${total}</span>
+    <div class="tb-sep"></div>
+    <button onclick="startPresentation()" title="Present (F5)">▶ Present</button>
+    <div class="tb-sep"></div>
+    <button onclick="exportPPTX()" title="Export .pptx">⤓ PPTX</button>
+    <button onclick="exportPDF()" title="Export PDF">⤓ PDF</button>
+    <button onclick="copySlideClipboard()" title="Copy slide to clipboard">📋</button>
+  `;
+}
+
+function renderPresProps(){
+  const div=document.getElementById('presPropsContent'); if(!div) return;
+  const slide=activeSlide(); if(!slide){div.innerHTML='';return;}
+  const el=selectedElId?slide.elements.find(e=>e.id===selectedElId):null;
+  let h='';
+  h+='<h4>Slide</h4>';
+  h+=`<div class="prop-row"><label>Background</label><input type="color" value="${slide.background.color||'#ffffff'}" oninput="updateSlideBg(this.value)" style="width:40px;height:24px;"></div>`;
+  h+=`<div class="prop-row"><label>BG Type</label><select onchange="updateSlideBgType(this.value)"><option value="solid" ${slide.background.type==='solid'?'selected':''}>Solid</option><option value="image" ${slide.background.type==='image'?'selected':''}>Image</option></select></div>`;
+  if(slide.background.type==='image') h+=`<button class="btn btn-outline" onclick="uploadSlideBgImage()" style="font-size:10px;margin:4px 0;">Upload Image</button>`;
+  h+=`<div class="prop-row"><label>Transition</label><select onchange="updateSlideTransition(this.value)">${['none','fade','slide-left','slide-right','slide-up'].map(t=>`<option value="${t}" ${slide.transition===t?'selected':''}>${t}</option>`).join('')}</select></div>`;
+
+  if(el){
+    h+='<h4>Position & Size</h4>';
+    h+=`<div class="prop-row"><label>X</label><input type="number" value="${el.x}" onchange="updateElP('x',+this.value)" style="width:60px;"></div>`;
+    h+=`<div class="prop-row"><label>Y</label><input type="number" value="${el.y}" onchange="updateElP('y',+this.value)" style="width:60px;"></div>`;
+    h+=`<div class="prop-row"><label>W</label><input type="number" value="${el.w}" onchange="updateElP('w',+this.value)" style="width:60px;"></div>`;
+    h+=`<div class="prop-row"><label>H</label><input type="number" value="${el.h}" onchange="updateElP('h',+this.value)" style="width:60px;"></div>`;
+    h+=`<div class="prop-row"><label>Rotation</label><input type="number" value="${el.rotation||0}" onchange="updateElP('rotation',+this.value)" style="width:60px;"></div>`;
+    h+=`<div class="prop-row"><label>Opacity</label><input type="range" min="0" max="1" step="0.05" value="${el.opacity}" oninput="updateElP('opacity',+this.value)"></div>`;
+    h+='<h4>Layer</h4><div class="prop-btn-row">';
+    h+=`<button onclick="moveElLayer('front')">Front</button><button onclick="moveElLayer('up')">Up</button><button onclick="moveElLayer('down')">Down</button><button onclick="moveElLayer('back')">Back</button>`;
+    h+=`<button onclick="deleteSlideEl()" style="color:var(--danger);">Delete</button></div>`;
+    h+='<h4>Align on Slide</h4><div class="align-toolbar">';
+    h+=`<button onclick="alignEl('left')" title="Left">⇐</button><button onclick="alignEl('hcenter')" title="H Center">⇔</button><button onclick="alignEl('right')" title="Right">⇒</button>`;
+    h+=`<button onclick="alignEl('top')" title="Top">⇑</button><button onclick="alignEl('vcenter')" title="V Center">⇕</button><button onclick="alignEl('bottom')" title="Bottom">⇓</button></div>`;
+
+    if(el.type==='text'){
+      h+='<h4>Text Formatting</h4>';
+      h+=`<div class="prop-row"><label>Font Size</label><input type="number" value="${el.fontSize||16}" onchange="updateElP('fontSize',+this.value)" style="width:55px;"></div>`;
+      h+=`<div class="prop-row"><label>Font</label><select onchange="updateElP('fontFamily',this.value)">${['Inter','Poppins','Roboto','Open Sans','Lato','Arial','Georgia','Times New Roman'].map(f=>`<option ${(el.fontFamily||'Inter')===f?'selected':''}>${f}</option>`).join('')}</select></div>`;
+      h+=`<div class="prop-row"><label>Weight</label><select onchange="updateElP('fontWeight',this.value)">${['400','500','600','700'].map(w=>`<option value="${w}" ${(el.fontWeight||'400')===w?'selected':''}>${w}</option>`).join('')}</select></div>`;
+      h+=`<div class="prop-row"><label>Color</label><input type="color" value="${el.fontColor||'#2D231C'}" oninput="updateElP('fontColor',this.value)" style="width:36px;height:22px;"></div>`;
+      h+=`<div class="prop-row"><label>Align</label><select onchange="updateElP('textAlign',this.value)">${['left','center','right','justify'].map(a=>`<option ${(el.textAlign||'left')===a?'selected':''}>${a}</option>`).join('')}</select></div>`;
+      h+=`<div class="prop-row"><label>BG Color</label><input type="color" value="${el.bgColor||'#ffffff'}" oninput="updateElP('bgColor',this.value)" style="width:36px;height:22px;"></div>`;
+      h+=`<div class="prop-row"><label>Italic</label><input type="checkbox" ${el.fontStyle==='italic'?'checked':''} onchange="updateElP('fontStyle',this.checked?'italic':'normal')"></div>`;
+      h+=`<div class="prop-row"><label>Underline</label><input type="checkbox" ${el.textDecoration==='underline'?'checked':''} onchange="updateElP('textDecoration',this.checked?'underline':'none')"></div>`;
+      h+=`<div class="prop-row"><label>Line Height</label><input type="text" value="${el.lineHeight||''}" onchange="updateElP('lineHeight',this.value)" placeholder="e.g. 1.5"></div>`;
+    } else if(el.type==='shape'){
+      h+='<h4>Shape</h4>';
+      h+=`<div class="prop-row"><label>Type</label><select onchange="updateElP('shapeType',this.value)">${['rect','circle','line','arrow'].map(s=>`<option ${el.shapeType===s?'selected':''}>${s}</option>`).join('')}</select></div>`;
+      if(el.shapeType!=='line'&&el.shapeType!=='arrow'){
+        h+=`<div class="prop-row"><label>Fill</label><input type="color" value="${el.fill||'#f5f3f0'}" oninput="updateElP('fill',this.value)" style="width:36px;height:22px;"></div>`;
+        h+=`<div class="prop-row"><label>Radius</label><input type="number" value="${el.borderRadius||0}" onchange="updateElP('borderRadius',+this.value)" style="width:55px;"></div>`;
+        h+=`<div class="prop-row"><label>Shadow</label><input type="checkbox" ${el.shadow?'checked':''} onchange="updateElP('shadow',this.checked)"></div>`;
+      }
+      h+=`<div class="prop-row"><label>Stroke</label><input type="color" value="${el.stroke||'#2D231C'}" oninput="updateElP('stroke',this.value)" style="width:36px;height:22px;"></div>`;
+      h+=`<div class="prop-row"><label>Stroke W</label><input type="number" value="${el.strokeWidth||1}" onchange="updateElP('strokeWidth',+this.value)" style="width:55px;"></div>`;
+    } else if(el.type==='widget-ref'){
+      h+='<h4>Widget</h4>';
+      h+=`<p style="font-size:11px;color:#888;">ID: ${el.widgetId||'-'} (Tab: ${el.tabId||'-'})</p>`;
+      h+=`<button class="btn btn-outline" onclick="refreshSnapshot()" style="font-size:11px;">Refresh Snapshot</button>`;
+    } else if(el.type==='image'){
+      h+='<h4>Image</h4>';
+      h+=`<div class="prop-row"><label>Radius</label><input type="number" value="${el.borderRadius||0}" onchange="updateElP('borderRadius',+this.value)" style="width:55px;"></div>`;
+      h+=`<button class="btn btn-outline" onclick="replaceSlideImage()" style="font-size:11px;">Replace Image</button>`;
+    }
+  }
+  div.innerHTML=h;
+}
+
+function updateSlideBg(c){ const s=activeSlide(); if(!s) return; presPush(); s.background.color=c; renderSlideCanvas(); renderSlideStrip(); }
+function updateSlideBgType(t){ const s=activeSlide(); if(!s) return; presPush(); s.background.type=t; renderPresProps(); renderSlideCanvas(); }
+function uploadSlideBgImage(){ const inp=document.createElement('input'); inp.type='file'; inp.accept='image/*'; inp.onchange=(e)=>{ const f=e.target.files[0]; if(!f) return; const rd=new FileReader(); rd.onload=(ev)=>{ const s=activeSlide(); if(s){presPush();s.background.type='image';s.background.image=ev.target.result;renderPresEditor();} }; rd.readAsDataURL(f); }; inp.click(); }
+function updateSlideTransition(v){ const s=activeSlide(); if(s){presPush();s.transition=v;} }
+function updateElP(prop,val){ const s=activeSlide(); if(!s||!selectedElId) return; const el=s.elements.find(e=>e.id===selectedElId); if(!el) return; presPush(); el[prop]=val; renderSlideCanvas(); renderSlideStrip(); }
+function deleteSlideEl(){ const s=activeSlide(); if(!s||!selectedElId) return; presPush(); s.elements=s.elements.filter(e=>e.id!==selectedElId); selectedElId=null; renderPresEditor(); }
+
+function moveElLayer(dir){
+  const s=activeSlide(); if(!s||!selectedElId) return; presPush();
+  const el=s.elements.find(e=>e.id===selectedElId); if(!el) return;
+  const zs=s.elements.map(e=>e.z||0).sort((a,b)=>a-b);
+  if(dir==='front') el.z=(zs[zs.length-1]||0)+1;
+  else if(dir==='back') el.z=(zs[0]||0)-1;
+  else if(dir==='up') el.z=(el.z||0)+1.5;
+  else if(dir==='down') el.z=(el.z||0)-1.5;
+  let zi=1; s.elements.sort((a,b)=>(a.z||0)-(b.z||0)).forEach(e=>e.z=zi++);
+  renderSlideCanvas();
+}
+
+function alignEl(alignment){
+  const s=activeSlide(); if(!s||!selectedElId) return; presPush();
+  const el=s.elements.find(e=>e.id===selectedElId); if(!el) return;
+  if(alignment==='left') el.x=0;
+  else if(alignment==='right') el.x=SLIDE_W-el.w;
+  else if(alignment==='hcenter') el.x=Math.round((SLIDE_W-el.w)/2);
+  else if(alignment==='top') el.y=0;
+  else if(alignment==='bottom') el.y=SLIDE_H-el.h;
+  else if(alignment==='vcenter') el.y=Math.round((SLIDE_H-el.h)/2);
+  renderSlideCanvas(); renderPresProps();
+}
+
+function addSlideText(){
+  const s=activeSlide(); if(!s) return; presPush();
+  s.elements.push(makeSlideEl('text',{x:100,y:200,w:400,h:60,text:'Double-click to edit',fontSize:20,fontFamily:'Inter',fontWeight:'400',fontColor:'#2D231C',textAlign:'left',bgColor:'transparent'}));
+  selectedElId=s.elements[s.elements.length-1].id; renderPresEditor();
+}
+function addSlideShape(shapeType){
+  const s=activeSlide(); if(!s) return; presPush();
+  const defaults={rect:{w:200,h:150,fill:'#f5f3f0',stroke:'#e0d8cf',strokeWidth:1},circle:{w:150,h:150,fill:'#f5f3f0',stroke:'#e0d8cf',strokeWidth:1},line:{w:300,h:20,fill:'transparent',stroke:'#2D231C',strokeWidth:2},arrow:{w:300,h:20,fill:'transparent',stroke:'#2D231C',strokeWidth:2}};
+  const d=defaults[shapeType]||defaults.rect;
+  s.elements.push(makeSlideEl('shape',{x:100,y:150,shapeType,...d}));
+  selectedElId=s.elements[s.elements.length-1].id; renderPresEditor();
+}
+function addSlideImage(){
+  const inp=document.createElement('input'); inp.type='file'; inp.accept='image/*';
+  inp.onchange=(e)=>{ const f=e.target.files[0]; if(!f) return; const rd=new FileReader(); rd.onload=(ev)=>{ const s=activeSlide(); if(!s) return; presPush(); s.elements.push(makeSlideEl('image',{x:100,y:100,w:400,h:300,src:ev.target.result})); selectedElId=s.elements[s.elements.length-1].id; renderPresEditor(); }; rd.readAsDataURL(f); };
+  inp.click();
+}
+function replaceSlideImage(){
+  const s=activeSlide(); if(!s||!selectedElId) return;
+  const el=s.elements.find(e=>e.id===selectedElId); if(!el||el.type!=='image') return;
+  const inp=document.createElement('input'); inp.type='file'; inp.accept='image/*';
+  inp.onchange=(e)=>{ const f=e.target.files[0]; if(!f) return; const rd=new FileReader(); rd.onload=(ev)=>{ presPush(); el.src=ev.target.result; renderPresEditor(); }; rd.readAsDataURL(f); };
+  inp.click();
+}
+
+function showWidgetPicker(){
+  const allWidgets=[];
+  S.tabs.forEach(tab=>{ tab.widgets.forEach(w=>{ allWidgets.push({...w,_tabId:tab.id,_tabName:tab.name}); }); });
+  if(!allWidgets.length){ showToast('No dashboard widgets to insert. Create some in Dashboard mode first.'); return; }
+  const ov=document.createElement('div'); ov.className='widget-picker-overlay'; ov.onclick=(e)=>{if(e.target===ov)ov.remove();};
+  const pk=document.createElement('div'); pk.className='widget-picker';
+  pk.innerHTML='<h3>Insert Widget from Dashboard</h3>';
+  const grid=document.createElement('div'); grid.className='widget-picker-grid';
+  allWidgets.forEach(w=>{
+    const item=document.createElement('div'); item.className='widget-picker-item';
+    const typeLabel=w.type==='kpi'?'KPI':w.type==='chart'?'Chart':w.type==='table'?'Table':'Widget';
+    item.innerHTML=`<div class="wpi-type">${typeLabel} · ${w._tabName}</div><div class="wpi-name">${w.config?.title||w.config?.headerName||w.id}</div>`;
+    item.onclick=()=>{ ov.remove(); captureAndInsertWidget(w.id,w._tabId); };
+    grid.appendChild(item);
+  });
+  pk.appendChild(grid);
+  const closeRow=document.createElement('div'); closeRow.className='widget-picker-close';
+  closeRow.innerHTML='<button class="btn btn-outline" onclick="this.closest(\'.widget-picker-overlay\').remove()">Cancel</button>';
+  pk.appendChild(closeRow); ov.appendChild(pk); document.body.appendChild(ov);
+}
+
+async function captureAndInsertWidget(widgetId,tabId){
+  const origTab=S.activeTabId; const origMode=S.appMode;
+  if(tabId!==origTab){ S.activeTabId=tabId; applyFilters(); renderWidgets(); }
+  await new Promise(r=>setTimeout(r,200));
+  const wEl=document.querySelector(`.widget[data-id="${widgetId}"]`);
+  let snapshot=null;
+  if(wEl){
+    try{ const c=await html2canvas(wEl,{scale:2,useCORS:true,backgroundColor:'#fff'}); snapshot=c.toDataURL('image/png'); }
+    catch(e){ console.warn('Snapshot failed:',e); }
+  }
+  if(tabId!==origTab){ S.activeTabId=origTab; applyFilters(); renderWidgets(); }
+  if(origMode==='presentation'){ document.getElementById('mainContent').style.display='none'; document.getElementById('presEditor').style.display='flex'; }
+  const s=activeSlide(); if(!s) return; presPush();
+  s.elements.push(makeSlideEl('widget-ref',{x:60,y:60,w:500,h:350,widgetId,tabId,snapshot}));
+  selectedElId=s.elements[s.elements.length-1].id; renderPresEditor();
+}
+
+async function refreshSnapshot(){
+  const s=activeSlide(); if(!s||!selectedElId) return;
+  const el=s.elements.find(e=>e.id===selectedElId); if(!el||el.type!=='widget-ref') return;
+  switchAppMode('dashboard');
+  if(el.tabId&&el.tabId!==S.activeTabId){ S.activeTabId=el.tabId; applyFilters(); renderWidgets(); }
+  await new Promise(r=>setTimeout(r,300));
+  const wEl=document.querySelector(`.widget[data-id="${el.widgetId}"]`);
+  if(wEl){ try{ const c=await html2canvas(wEl,{scale:2,useCORS:true,backgroundColor:'#fff'}); presPush(); el.snapshot=c.toDataURL('image/png'); }catch(e){} }
+  switchAppMode('presentation');
+}
+
+function renderPresNotes(){
+  const s=activeSlide(), ta=document.getElementById('presNotesText');
+  if(s&&ta) ta.value=s.notes||'';
+}
+function updateSlideNotes(v){ const s=activeSlide(); if(s) s.notes=v; }
+function togglePresNotes(){
+  const w=document.getElementById('presNotesWrap'), btn=document.getElementById('presNotesToggle');
+  if(!w) return;
+  if(w.style.height==='28px'){w.style.height='120px';btn.textContent='Speaker Notes ▼';}
+  else{w.style.height='28px';btn.textContent='Speaker Notes ▲';}
+}
+
+function showSlideCtxMenu(e,slideId){
+  document.querySelectorAll('.slide-ctx-menu').forEach(m=>m.remove());
+  const menu=document.createElement('div'); menu.className='slide-ctx-menu';
+  menu.style.left=e.clientX+'px'; menu.style.top=e.clientY+'px';
+  const items=[
+    {label:'Duplicate',action:()=>dupPresSlide(slideId)},
+    {label:'Add Slide After',action:()=>addPresSlide('blank',slideId)},
+    {label:'Move Up',action:()=>moveSlideUp(slideId)},
+    {label:'Move Down',action:()=>moveSlideDown(slideId)},
+    {label:(S.slides.find(s=>s.id===slideId)?.hidden?'Show':'Hide/Skip'),action:()=>toggleSlideHidden(slideId)},
+    {label:'Copy to Clipboard',action:()=>copySlideClipboard(slideId)},
+    {label:'Delete',action:()=>deletePresSlide(slideId),danger:true}
+  ];
+  items.forEach(it=>{ const d=document.createElement('div'); d.className='slide-ctx-item'+(it.danger?' danger':''); d.textContent=it.label; d.onclick=()=>{menu.remove();it.action();}; menu.appendChild(d); });
+  document.body.appendChild(menu);
+  setTimeout(()=>{ const close=()=>{menu.remove();document.removeEventListener('click',close);}; document.addEventListener('click',close); },0);
+}
+
+function showTplPicker(){
+  const ov=document.createElement('div'); ov.className='tpl-picker-overlay'; ov.onclick=(e)=>{if(e.target===ov)ov.remove();};
+  const pk=document.createElement('div'); pk.className='tpl-picker';
+  pk.innerHTML='<h3>Choose Slide Layout</h3>';
+  const grid=document.createElement('div'); grid.className='tpl-grid';
+  Object.entries(SLIDE_TEMPLATES).forEach(([key,tpl])=>{
+    const item=document.createElement('div'); item.className='tpl-item';
+    item.innerHTML=`<div class="tpl-preview">${tpl.icon||'▢'}</div><div>${tpl.name}</div>`;
+    item.onclick=()=>{ ov.remove(); addPresSlide(key); };
+    grid.appendChild(item);
+  });
+  pk.appendChild(grid);
+  const closeRow=document.createElement('div'); closeRow.style.textAlign='right'; closeRow.style.marginTop='12px';
+  closeRow.innerHTML='<button class="btn btn-outline" onclick="this.closest(\'.tpl-picker-overlay\').remove()">Cancel</button>';
+  pk.appendChild(closeRow); ov.appendChild(pk); document.body.appendChild(ov);
+}
+
+/* --- Presentation View Mode --- */
+let presViewIdx=0;
+function startPresentation(){
+  const vis=visibleSlides(); if(!vis.length) return;
+  presViewIdx=0;
+  const ov=document.getElementById('presViewOverlay'); ov.classList.add('active');
+  renderPresView();
+  document.addEventListener('keydown',presKeyHandler);
+}
+function exitPresentation(){
+  document.getElementById('presViewOverlay').classList.remove('active');
+  document.removeEventListener('keydown',presKeyHandler);
+}
+function presKeyHandler(e){
+  if(e.key==='Escape') exitPresentation();
+  else if(e.key==='ArrowRight'||e.key===' '||e.key==='Enter') presNext();
+  else if(e.key==='ArrowLeft'||e.key==='Backspace') presPrev();
+}
+function presNext(){ const vis=visibleSlides(); if(presViewIdx<vis.length-1){presViewIdx++;renderPresView();} }
+function presPrev(){ if(presViewIdx>0){presViewIdx--;renderPresView();} }
+
+function renderPresView(){
+  const vis=visibleSlides(), slide=vis[presViewIdx]; if(!slide) return;
+  const container=document.getElementById('presViewSlide'), prog=document.getElementById('presViewProgress');
+  const vw=window.innerWidth, vh=window.innerHeight;
+  const scale=Math.min(vw/SLIDE_W, vh/SLIDE_H);
+  container.style.width=(SLIDE_W*scale)+'px'; container.style.height=(SLIDE_H*scale)+'px';
+  container.style.background=slide.background.color||'#fff';
+  container.style.backgroundImage=''; container.style.backgroundSize=''; container.style.backgroundPosition='';
+  if(slide.background.type==='image'&&slide.background.image){ container.style.backgroundImage=`url(${slide.background.image})`; container.style.backgroundSize='cover'; container.style.backgroundPosition='center'; }
+  container.innerHTML='';
+  container.onclick=presNext;
+  const sorted=[...slide.elements].sort((a,b)=>(a.z||0)-(b.z||0));
+  sorted.forEach(el=>{
+    const d=document.createElement('div');
+    d.style.cssText=`position:absolute;left:${el.x*scale}px;top:${el.y*scale}px;width:${el.w*scale}px;height:${el.h*scale}px;opacity:${el.opacity};overflow:hidden;`;
+    if(el.rotation) d.style.transform=`rotate(${el.rotation}deg)`;
+    renderElContent(d,el,scale);
+    container.appendChild(d);
+  });
+  prog.style.width=((presViewIdx+1)/vis.length*100)+'%';
+}
+
+/* --- Keyboard shortcuts for presentation editor --- */
+document.addEventListener('keydown',e=>{
+  if(S.appMode!=='presentation') return;
+  if(document.getElementById('presViewOverlay').classList.contains('active')) return;
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA'||e.target.tagName==='SELECT'||e.target.contentEditable==='true') return;
+  if(e.key==='Delete'||e.key==='Backspace'){ if(selectedElId){ deleteSlideEl(); e.preventDefault(); } }
+  if(e.ctrlKey&&e.key==='z'){ presUndo(); e.preventDefault(); }
+  if(e.ctrlKey&&e.key==='y'){ presRedo(); e.preventDefault(); }
+  if(e.key==='F5'){ e.preventDefault(); startPresentation(); }
+  if(e.ctrlKey&&e.key==='c'&&selectedElId){ presClipboard=JSON.parse(JSON.stringify(activeSlide()?.elements.find(el=>el.id===selectedElId))); }
+  if(e.ctrlKey&&e.key==='v'&&presClipboard){ const s=activeSlide(); if(s){presPush(); const c={...JSON.parse(JSON.stringify(presClipboard)),id:presEid(),x:presClipboard.x+20,y:presClipboard.y+20}; s.elements.push(c); selectedElId=c.id; renderPresEditor();} }
+});
+let presClipboard=null;
+
+/* Save/Load: slides are now saved/loaded directly in the existing saveDashboardToFile/loadDashboardFromFile functions */
+
+/* ═══════════════════════════════════════════
+   PHASE 3: EXPORT (PPTX, PDF, Clipboard)
+   ═══════════════════════════════════════════ */
+async function renderSlideToCanvas(slide, scale){
+  const offscreen = document.createElement('div');
+  offscreen.style.cssText = `position:fixed;left:-9999px;top:0;width:${SLIDE_W}px;height:${SLIDE_H}px;background:${slide.background.color||'#fff'};overflow:hidden;`;
+  if(slide.background.type==='image'&&slide.background.image){ offscreen.style.backgroundImage=`url(${slide.background.image})`; offscreen.style.backgroundSize='cover'; offscreen.style.backgroundPosition='center'; }
+  const sorted=[...slide.elements].sort((a,b)=>(a.z||0)-(b.z||0));
+  sorted.forEach(el=>{
+    const d=document.createElement('div');
+    d.style.cssText=`position:absolute;left:${el.x}px;top:${el.y}px;width:${el.w}px;height:${el.h}px;opacity:${el.opacity};overflow:hidden;`;
+    if(el.rotation) d.style.transform=`rotate(${el.rotation}deg)`;
+    renderElContent(d,el,1);
+    offscreen.appendChild(d);
+  });
+  document.body.appendChild(offscreen);
+  await new Promise(r=>setTimeout(r,100));
+  const canvas = await html2canvas(offscreen, {scale: scale||2, useCORS:true, backgroundColor:null});
+  offscreen.remove();
+  return canvas;
+}
+
+async function exportPPTX(){
+  if(typeof PptxGenJS==='undefined'){ showToast('PptxGenJS library not loaded'); return; }
+  showLoading('Generating PPTX...');
+  try{
+    const pptx = new PptxGenJS();
+    pptx.layout = 'LAYOUT_WIDE';
+    const vis = visibleSlides();
+    for(let i=0;i<vis.length;i++){
+      await new Promise(r=>setTimeout(r,0));
+      document.getElementById('loadingText').textContent=`Rendering slide ${i+1} of ${vis.length}...`;
+      const slide = vis[i];
+      const pSlide = pptx.addSlide();
+      if(slide.background.color && slide.background.color !== '#ffffff') pSlide.background = {color: slide.background.color.replace('#','')};
+      const canvas = await renderSlideToCanvas(slide, 2);
+      const imgData = canvas.toDataURL('image/png');
+      pSlide.addImage({data:imgData, x:0, y:0, w:'100%', h:'100%'});
+      if(slide.notes) pSlide.addNotes(slide.notes);
+    }
+    pptx.writeFile({fileName:'ChartIt-Presentation.pptx'});
+    showToast('PPTX exported successfully');
+  }catch(e){ console.error(e); showToast('PPTX export failed: '+e.message); }
+  finally{ hideLoading(); }
+}
+
+async function exportPDF(){
+  const jsPDFLib = window.jspdf;
+  if(!jsPDFLib){ showToast('jsPDF library not loaded'); return; }
+  showLoading('Generating PDF...');
+  try{
+    const pdf = new jsPDFLib.jsPDF({orientation:'landscape',unit:'px',format:[SLIDE_W,SLIDE_H]});
+    const vis = visibleSlides();
+    for(let i=0;i<vis.length;i++){
+      await new Promise(r=>setTimeout(r,0));
+      document.getElementById('loadingText').textContent=`Rendering slide ${i+1} of ${vis.length}...`;
+      if(i>0) pdf.addPage([SLIDE_W,SLIDE_H],'landscape');
+      const canvas = await renderSlideToCanvas(vis[i], 2);
+      const imgData = canvas.toDataURL('image/png');
+      pdf.addImage(imgData,'PNG',0,0,SLIDE_W,SLIDE_H);
+    }
+    pdf.save('ChartIt-Presentation.pdf');
+    showToast('PDF exported successfully');
+  }catch(e){ console.error(e); showToast('PDF export failed: '+e.message); }
+  finally{ hideLoading(); }
+}
+
+async function copySlideClipboard(slideId){
+  const slide = slideId ? S.slides.find(s=>s.id===slideId) : activeSlide();
+  if(!slide) return;
+  showToast('Capturing slide...');
+  try{
+    const canvas = await renderSlideToCanvas(slide, 3);
+    canvas.toBlob(async(blob)=>{
+      if(!blob) return;
+      try{ await navigator.clipboard.write([new ClipboardItem({'image/png':blob})]); showToast('Slide copied to clipboard'); }
+      catch(e){ const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='slide.png'; a.click(); URL.revokeObjectURL(url); showToast('Saved as slide.png'); }
+    },'image/png');
+  }catch(e){ showToast('Copy failed: '+e.message); }
+}
 </script>
 
 <div class="formula-manager-overlay" id="formulaManagerOverlay" onclick="if(event.target===this)closeFormulaManager()">
