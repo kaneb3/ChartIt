@@ -404,7 +404,7 @@ input[type="file"] { display:none; }
 .slide-el .el-resize.sw{bottom:-4px;left:-4px;cursor:sw-resize;}
 .slide-el .el-resize.se{bottom:-4px;right:-4px;cursor:se-resize;}
 .slide-el-text{padding:8px;white-space:pre-wrap;word-break:break-word;outline:none;width:100%;height:100%;box-sizing:border-box;overflow:hidden;}
-.slide-el-widget-snap{width:100%;height:100%;object-fit:contain;pointer-events:none;}
+.slide-el-widget-snap{width:100%;height:100%;object-fit:contain;pointer-events:none;image-rendering:-webkit-optimize-contrast;image-rendering:crisp-edges;}
 .slide-el-shape{width:100%;height:100%;box-sizing:border-box;}
 .pres-props{width:260px;min-width:260px;background:#fff;border-left:1px solid var(--border);overflow-y:auto;padding:12px;font-size:12px;}
 .pres-props h4{font-size:12px;margin:12px 0 6px;color:var(--text-primary);font-weight:600;border-bottom:1px solid var(--border);padding-bottom:4px;}
@@ -2712,7 +2712,35 @@ function renderChartWidget(w) {
   chartInstances[w.id]._rawLabels = rawLabels;
 
   if (!isPie) {
-    let dragLabel = null, dragStartIdx = -1;
+    let chartDrag = null;
+    const getAxisIdx = (e) => {
+      const chart = chartInstances[w.id]; if (!chart) return -1;
+      const axis = isHoriz ? chart.scales.y : chart.scales.x;
+      if (!axis) return -1;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left, y = e.clientY - rect.top;
+      let closest = -1, closestDist = Infinity;
+      for (let i = 0; i < rawLabels.length; i++) {
+        const pos = axis.getPixelForValue(i);
+        const dist = isHoriz ? Math.abs(y - pos) : Math.abs(x - pos);
+        if (dist < closestDist) { closestDist = dist; closest = i; }
+      }
+      return (closest >= 0 && closestDist < 40) ? closest : -1;
+    };
+    const showDragIndicator = (idx) => {
+      const chart = chartInstances[w.id]; if (!chart) return;
+      const axis = isHoriz ? chart.scales.y : chart.scales.x;
+      if (!axis) return;
+      const container = canvas.parentElement;
+      let ind = container.querySelector('.chart-drag-indicator');
+      if (!ind) { ind = document.createElement('div'); ind.className = 'chart-drag-indicator'; ind.style.cssText = 'position:absolute;background:var(--accent);z-index:99;pointer-events:none;transition:all .1s;'; container.style.position = 'relative'; container.appendChild(ind); }
+      const pos = axis.getPixelForValue(idx);
+      const chartArea = chart.chartArea;
+      if (isHoriz) { ind.style.left = chartArea.left + 'px'; ind.style.width = (chartArea.right - chartArea.left) + 'px'; ind.style.top = pos + 'px'; ind.style.height = '2px'; }
+      else { ind.style.top = chartArea.top + 'px'; ind.style.height = (chartArea.bottom - chartArea.top) + 'px'; ind.style.left = pos + 'px'; ind.style.width = '2px'; }
+      ind.style.display = '';
+    };
+    const hideDragIndicator = () => { const ind = canvas.parentElement.querySelector('.chart-drag-indicator'); if (ind) ind.style.display = 'none'; };
     canvas.addEventListener('mousedown', function(e) {
       if (e.button !== 0) return;
       const chart = chartInstances[w.id]; if (!chart) return;
@@ -2722,44 +2750,31 @@ function renderChartWidget(w) {
       const x = e.clientX - rect.left, y = e.clientY - rect.top;
       const inLabelZone = isHoriz ? (x < axis.right && x > axis.left - 60) : (y > axis.top && y < axis.bottom + 40);
       if (!inLabelZone) return;
-      let closest = -1, closestDist = Infinity;
-      for (let i = 0; i < rawLabels.length; i++) {
-        const pos = axis.getPixelForValue(i);
-        const dist = isHoriz ? Math.abs(y - pos) : Math.abs(x - pos);
-        if (dist < closestDist) { closestDist = dist; closest = i; }
-      }
-      if (closest < 0 || closestDist > 40) return;
-      dragLabel = rawLabels[closest]; dragStartIdx = closest;
+      const idx = getAxisIdx(e);
+      if (idx < 0) return;
+      e.preventDefault(); e.stopPropagation();
+      chartDrag = { startIdx: idx, currentIdx: idx, wId: w.id };
       canvas.style.cursor = 'grabbing';
     });
     canvas.addEventListener('mousemove', function(e) {
-      if (dragLabel === null) return;
-      canvas.style.cursor = 'grabbing';
+      if (!chartDrag) return;
+      const idx = getAxisIdx(e);
+      if (idx >= 0 && idx !== chartDrag.currentIdx) { chartDrag.currentIdx = idx; showDragIndicator(idx); }
     });
-    const endDrag = function(e) {
-      if (dragLabel === null) return;
-      const chart = chartInstances[w.id]; if (!chart) { dragLabel = null; return; }
-      const axis = isHoriz ? chart.scales.y : chart.scales.x;
-      if (!axis) { dragLabel = null; return; }
-      const rect = canvas.getBoundingClientRect();
-      const x = e.clientX - rect.left, y = e.clientY - rect.top;
-      let closest = -1, closestDist = Infinity;
-      for (let i = 0; i < rawLabels.length; i++) {
-        const pos = axis.getPixelForValue(i);
-        const dist = isHoriz ? Math.abs(y - pos) : Math.abs(x - pos);
-        if (dist < closestDist) { closestDist = dist; closest = i; }
+    canvas.addEventListener('mouseup', function(e) {
+      if (!chartDrag) return;
+      hideDragIndicator();
+      const { startIdx, currentIdx } = chartDrag;
+      chartDrag = null; canvas.style.cursor = '';
+      if (startIdx !== currentIdx && currentIdx >= 0) {
+        const order = c.labelOrder ? [...c.labelOrder] : [...rawLabels];
+        const item = order.splice(startIdx, 1)[0];
+        order.splice(currentIdx, 0, item);
+        c.labelOrder = order;
+        setTimeout(() => renderChartWidget(w), 0);
       }
-      if (closest >= 0 && closest !== dragStartIdx) {
-        if (!c.labelOrder) c.labelOrder = [...rawLabels];
-        const item = c.labelOrder.splice(dragStartIdx, 1)[0];
-        c.labelOrder.splice(closest, 0, item);
-        renderChartWidget(w);
-      }
-      dragLabel = null; dragStartIdx = -1;
-      canvas.style.cursor = '';
-    };
-    canvas.addEventListener('mouseup', endDrag);
-    canvas.addEventListener('mouseleave', () => { if (dragLabel !== null) { dragLabel = null; dragStartIdx = -1; canvas.style.cursor = ''; } });
+    });
+    canvas.addEventListener('mouseleave', () => { if (chartDrag) { chartDrag = null; canvas.style.cursor = ''; hideDragIndicator(); } });
   }
 
   canvas.oncontextmenu = function(e) {
@@ -4357,7 +4372,7 @@ function loadDashboardFromFile(file) {
       if (data.slides && data.slides.length) {
         S.slides = data.slides;
         S.activeSlideId = data.activeSlideId || S.slides[0].id;
-        S.presZoom = data.presZoom || 0.75;
+        S.presZoom = data.presZoom || 1;
         if (typeof slideIdC !== 'undefined') { slideIdC = Math.max(0, ...S.slides.map(s => parseInt(s.id.replace('sl','')) || 0)) + 1; }
         if (typeof slideElIdC !== 'undefined') { S.slides.forEach(s => s.elements.forEach(el => { const n = parseInt(el.id.replace('se','')) || 0; if (n >= slideElIdC) slideElIdC = n + 1; })); }
       }
@@ -4695,7 +4710,7 @@ document.addEventListener('click', e => {
 /* ═══════════════════════════════════════════
    PRESENTATION BUILDER
    ═══════════════════════════════════════════ */
-const SLIDE_W = 960, SLIDE_H = 540;
+const SLIDE_W = 1344, SLIDE_H = 756;
 let slideIdC = 0, slideElIdC = 0;
 const presNid = () => 'sl'+(slideIdC++);
 const presEid = () => 'se'+(slideElIdC++);
@@ -4703,7 +4718,7 @@ const presEid = () => 'se'+(slideElIdC++);
 if (!S.slides) S.slides = [];
 if (!S.activeSlideId) S.activeSlideId = null;
 if (!S.appMode) S.appMode = 'dashboard';
-if (!S.presZoom) S.presZoom = 0.75;
+if (!S.presZoom) S.presZoom = 1;
 let selectedElId = null;
 let presUndoStack = [], presRedoStack = [];
 
@@ -4936,9 +4951,11 @@ function renderPresToolbar(){
     <div class="tb-sep"></div>
     <select onchange="S.presZoom=+this.value;renderSlideCanvas();" title="Zoom">
       <option value="0.5" ${S.presZoom===0.5?'selected':''}>50%</option>
-      <option value="0.75" ${S.presZoom===0.75?'selected':''}>75%</option>
+      <option value="0.65" ${S.presZoom===0.65?'selected':''}>65%</option>
+      <option value="0.8" ${S.presZoom===0.8?'selected':''}>80%</option>
       <option value="1" ${S.presZoom===1?'selected':''}>100%</option>
       <option value="1.25" ${S.presZoom===1.25?'selected':''}>125%</option>
+      <option value="1.5" ${S.presZoom===1.5?'selected':''}>150%</option>
     </select>
     <div class="tb-sep"></div>
     <span style="font-size:11px;color:var(--text-secondary);">Slide ${sIdx+1} of ${total}</span>
@@ -5098,8 +5115,13 @@ async function captureAndInsertWidget(widgetId,tabId){
   const wEl=document.getElementById(widgetId);
   let snapshot=null;
   if(wEl){
-    try{ const c=await html2canvas(wEl,{scale:2,useCORS:true,backgroundColor:'#fff'}); snapshot=c.toDataURL('image/png'); }
+    const grip=wEl.querySelector('.grip'), actions=wEl.querySelector('.widget-actions'), resizes=wEl.querySelectorAll('.widget-resize'), h4=wEl.querySelector('.widget-handle h4');
+    if(grip) grip.style.display='none'; if(actions) actions.style.display='none'; resizes.forEach(r=>r.style.display='none');
+    if(h4){ h4.style.overflow='visible'; h4.style.whiteSpace='normal'; h4.style.textOverflow='unset'; }
+    try{ const c=await html2canvas(wEl,{scale:4,useCORS:true,backgroundColor:'#fff',logging:false}); snapshot=c.toDataURL('image/png'); }
     catch(e){ console.warn('Snapshot failed:',e); }
+    if(grip) grip.style.display=''; if(actions) actions.style.display=''; resizes.forEach(r=>r.style.display='');
+    if(h4){ h4.style.overflow=''; h4.style.whiteSpace=''; h4.style.textOverflow=''; }
   } else { console.warn('Widget element not found:', widgetId); }
   if(tabId!==origTab){ S.activeTabId=origTab; rebuildFilters(); applyFilters(); }
   mc.style.display='none'; pe.style.display='flex'; sw.style.display='none';
@@ -5120,7 +5142,14 @@ async function refreshSnapshot(){
   rebuildFilters(); applyFilters(); renderAll();
   await new Promise(r=>setTimeout(r,500));
   const wEl=document.getElementById(el.widgetId);
-  if(wEl){ try{ const c=await html2canvas(wEl,{scale:2,useCORS:true,backgroundColor:'#fff'}); presPush(); el.snapshot=c.toDataURL('image/png'); showToast('Snapshot refreshed'); }catch(e){ showToast('Snapshot capture failed'); } }
+  if(wEl){
+    const grip=wEl.querySelector('.grip'), actions=wEl.querySelector('.widget-actions'), resizes=wEl.querySelectorAll('.widget-resize'), h4el=wEl.querySelector('.widget-handle h4');
+    if(grip) grip.style.display='none'; if(actions) actions.style.display='none'; resizes.forEach(r=>r.style.display='none');
+    if(h4el){ h4el.style.overflow='visible'; h4el.style.whiteSpace='normal'; h4el.style.textOverflow='unset'; }
+    try{ const c=await html2canvas(wEl,{scale:4,useCORS:true,backgroundColor:'#fff',logging:false}); presPush(); el.snapshot=c.toDataURL('image/png'); showToast('Snapshot refreshed'); }catch(e){ showToast('Snapshot capture failed'); }
+    if(grip) grip.style.display=''; if(actions) actions.style.display=''; resizes.forEach(r=>r.style.display='');
+    if(h4el){ h4el.style.overflow=''; h4el.style.whiteSpace=''; h4el.style.textOverflow=''; }
+  }
   else { showToast('Widget not found - it may have been deleted'); }
   S.activeTabId=origTab; rebuildFilters(); applyFilters();
   mc.style.display='none'; pe.style.display='flex'; sw.style.display='none';
