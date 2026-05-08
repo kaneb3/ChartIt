@@ -4991,31 +4991,42 @@ function showWidgetPicker(){
 }
 
 async function captureAndInsertWidget(widgetId,tabId){
-  const origTab=S.activeTabId; const origMode=S.appMode;
-  if(tabId!==origTab){ S.activeTabId=tabId; applyFilters(); renderWidgets(); }
-  await new Promise(r=>setTimeout(r,200));
+  const mc=document.getElementById('mainContent'), pe=document.getElementById('presEditor'), sw=document.querySelector('.sidebar-wrap');
+  const origTab=S.activeTabId;
+  mc.style.display=''; pe.style.display='none'; sw.style.display='';
+  if(tabId!==origTab){ S.activeTabId=tabId; }
+  rebuildFilters(); applyFilters(); renderAll();
+  await new Promise(r=>setTimeout(r,500));
   const wEl=document.querySelector(`.widget[data-id="${widgetId}"]`);
   let snapshot=null;
   if(wEl){
     try{ const c=await html2canvas(wEl,{scale:2,useCORS:true,backgroundColor:'#fff'}); snapshot=c.toDataURL('image/png'); }
     catch(e){ console.warn('Snapshot failed:',e); }
   }
-  if(tabId!==origTab){ S.activeTabId=origTab; applyFilters(); renderWidgets(); }
-  if(origMode==='presentation'){ document.getElementById('mainContent').style.display='none'; document.getElementById('presEditor').style.display='flex'; }
+  if(tabId!==origTab){ S.activeTabId=origTab; rebuildFilters(); applyFilters(); }
+  mc.style.display='none'; pe.style.display='flex'; sw.style.display='none';
+  renderAll();
   const s=activeSlide(); if(!s) return; presPush();
   s.elements.push(makeSlideEl('widget-ref',{x:60,y:60,w:500,h:350,widgetId,tabId,snapshot}));
   selectedElId=s.elements[s.elements.length-1].id; renderPresEditor();
+  if(!snapshot) showToast('Could not capture widget - try refreshing the snapshot after switching to Dashboard and back.');
 }
 
 async function refreshSnapshot(){
   const s=activeSlide(); if(!s||!selectedElId) return;
   const el=s.elements.find(e=>e.id===selectedElId); if(!el||el.type!=='widget-ref') return;
-  switchAppMode('dashboard');
-  if(el.tabId&&el.tabId!==S.activeTabId){ S.activeTabId=el.tabId; applyFilters(); renderWidgets(); }
-  await new Promise(r=>setTimeout(r,300));
+  const mc=document.getElementById('mainContent'), pe=document.getElementById('presEditor'), sw=document.querySelector('.sidebar-wrap');
+  const origTab=S.activeTabId;
+  mc.style.display=''; pe.style.display='none'; sw.style.display='';
+  if(el.tabId) S.activeTabId=el.tabId;
+  rebuildFilters(); applyFilters(); renderAll();
+  await new Promise(r=>setTimeout(r,500));
   const wEl=document.querySelector(`.widget[data-id="${el.widgetId}"]`);
-  if(wEl){ try{ const c=await html2canvas(wEl,{scale:2,useCORS:true,backgroundColor:'#fff'}); presPush(); el.snapshot=c.toDataURL('image/png'); }catch(e){} }
-  switchAppMode('presentation');
+  if(wEl){ try{ const c=await html2canvas(wEl,{scale:2,useCORS:true,backgroundColor:'#fff'}); presPush(); el.snapshot=c.toDataURL('image/png'); showToast('Snapshot refreshed'); }catch(e){ showToast('Snapshot capture failed'); } }
+  else { showToast('Widget not found - it may have been deleted'); }
+  S.activeTabId=origTab; rebuildFilters(); applyFilters();
+  mc.style.display='none'; pe.style.display='flex'; sw.style.display='none';
+  renderPresEditor();
 }
 
 function renderPresNotes(){
