@@ -498,7 +498,7 @@ input[type="file"] { display:none; }
     <div class="upload-zone" id="uploadZone">
       <p>Drag & drop files here<br>or <span class="browse" id="browseBtn">browse</span></p>
     </div>
-    <input type="file" id="fileInput" accept=".xlsx,.xlsm" multiple />
+    <input type="file" id="fileInput" accept=".xlsx,.xlsm,.gz,.json" multiple />
     <div id="fileList" style="margin-top:8px;"></div>
     <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="document.getElementById('startLayoutInput').click()">📂 Load a Saved Layout</button>
     <input type="file" id="startLayoutInput" accept=".json" style="display:none" />
@@ -518,6 +518,7 @@ input[type="file"] { display:none; }
     <button class="btn btn-outline btn-block" onclick="resetDashboard()">↺ Reset to Default</button>
     <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
     <button class="btn btn-outline btn-block" onclick="exportCSV()">Export Data as CSV</button>
+    <button class="btn btn-outline btn-block" onclick="exportChartItData()" title="Save the parsed rows as a compact binary that re-opens in under a second.">💾 Save as ChartIt Data</button>
   </div>
 </aside>
 <div class="sidebar-arrow" id="sidebarArrow" onclick="toggleSidebar()" title="Toggle sidebar">◀</div>
@@ -760,6 +761,81 @@ if (PARSER_CHOICE !== 'sheetjs') {
   console.log('[ChartIt] Parser override active: ' + PARSER_CHOICE + ' (drop ?parser=wasm to revert)');
 }
 
+// Lazy parsing: on the SheetJS path the worker can return sheet
+// metadata first and parse each sheet's rows on demand, so the
+// sidebar paints in seconds even for large workbooks. ?lazy=0 forces
+// the legacy eager behavior; the WASM path is always eager because
+// modern-xlsx already builds the workbook in one pass.
+const LAZY_PARSE = (() => {
+  try {
+    const v = new URLSearchParams(location.search).get('lazy');
+    if (v === '0' || v === 'false') return false;
+  } catch(_) {}
+  return PARSER_CHOICE === 'sheetjs';
+})();
+
+// Column pruning: with ?prune=1, only columns referenced by the
+// current dashboard layout are kept in each row (plus the __file/
+// __sheet/__market/__media metadata columns). It cuts memory and
+// worker->main transfer time, but if a column is used somewhere we
+// don't detect, it'll be missing in the rows - hence opt-in.
+const PRUNE_COLS = (() => {
+  try {
+    const v = new URLSearchParams(location.search).get('prune');
+    return v === '1' || v === 'true';
+  } catch(_) { return false; }
+})();
+if (PRUNE_COLS) console.log('[ChartIt] Column pruning enabled (?prune=1)');
+
+// Preview mode: with ?preview=1, the first 5000 rows of each sheet
+// are parsed first and the dashboard renders against those, then
+// the rest stream in afterwards. Aggregates jump when full data
+// arrives, so it's opt-in.
+const PREVIEW_MODE = (() => {
+  try {
+    const v = new URLSearchParams(location.search).get('preview');
+    return v === '1' || v === 'true';
+  } catch(_) { return false; }
+})();
+const PREVIEW_ROWS = 5000;
+if (PREVIEW_MODE) console.log('[ChartIt] Preview mode enabled (?preview=1), first ' + PREVIEW_ROWS + ' rows per sheet first');
+
+// Walks the current dashboard layout and collects every column name
+// that any widget references. Returns null when there's not enough
+// info to prune safely (e.g. no widgets yet on a first load).
+function _collectPruneColumns() {
+  if (!PRUNE_COLS) return null;
+  if (!window.S || !Array.isArray(S.widgets) || S.widgets.length === 0) return null;
+  const cols = new Set();
+  const addExpr = (expr) => {
+    if (!expr || typeof expr !== 'string') return;
+    // Pull anything that looks like {column name} or [column name] out
+    // of formulas, plus bare identifiers.
+    const m = expr.match(/[\{\[]([^\}\]]+)[\}\]]/g);
+    if (m) m.forEach(s => cols.add(s.slice(1, -1)));
+  };
+  for (const w of S.widgets) {
+    const c = w && w.config; if (!c) continue;
+    if (c.metric) cols.add(c.metric);
+    if (c.sortCol) cols.add(c.sortCol);
+    if (Array.isArray(c.filters)) c.filters.forEach(f => { if (f && f.col) cols.add(f.col); });
+    if (Array.isArray(c.aggMetrics)) c.aggMetrics.forEach(m => { if (m && m.col) cols.add(m.col); });
+    if (Array.isArray(c.metrics)) c.metrics.forEach(m => { if (m && m.col) cols.add(m.col); });
+    if (Array.isArray(c.columns)) c.columns.forEach(x => cols.add(x));
+    if (Array.isArray(c.columnOrder)) c.columnOrder.forEach(x => cols.add(x));
+    if (c.colFormats && typeof c.colFormats === 'object') Object.keys(c.colFormats).forEach(x => cols.add(x));
+    if (c.valueRenames && typeof c.valueRenames === 'object') Object.keys(c.valueRenames).forEach(x => cols.add(x));
+    if (c.formula) addExpr(c.formula);
+  }
+  // Global filters / saved formulas also drive aggregations.
+  if (Array.isArray(S.globalFilters)) S.globalFilters.forEach(f => { if (f && f.col) cols.add(f.col); });
+  if (Array.isArray(S.globalFormulas)) S.globalFormulas.forEach(f => addExpr(f && f.expr));
+  // Metadata cols are always required.
+  ['__file','__sheet','__market','__media'].forEach(c => cols.add(c));
+  if (cols.size < 5) return null; // too thin to prune safely
+  return [...cols];
+}
+
 const _xlsxWorkerCode = `
 var XLSX_SHEETJS_URL = '${_xlsxAbsUrl}';
 var MODERN_XLSX_URL = '${_modernXlsxAbsUrl}';
@@ -782,7 +858,11 @@ function ensureModern() {
   return _modernReady;
 }
 
-var skipPat = /^(instructions|parameters|validationhelper|lookups|.*validate\\s*macros)$/i;
+// Sheets matching this pattern are skipped entirely (no row parse, no
+// transfer back). It only matches common template auxiliary sheets;
+// any user-content sheet should still come through. Trim whitespace
+// before testing so "  Notes " still matches.
+var skipPat = /^(instructions?|parameters?|validationhelper|lookups?|.*validate\\s*macros|cover( ?(page|sheet))?|notes?|legend|readme|read ?me|info|intro|change ?log|version[ ]?history|do not (delete|edit|use|touch)|template|sheet\\d+\\s*\\(empty\\)|.*\\(empty\\)|.* v\\d+(\\.\\d+)*|.*-v\\d+(\\.\\d+)*|copy of .*|backup.*|~temp.*)$/i;
 
 // Tighter parse options: skip work we don't need downstream.
 // - dense:true     -> 2D-array cell storage; far less memory and faster for large sheets
@@ -868,14 +948,36 @@ function tightenRange(sheet) {
   sheet['!ref'] = XLSX.utils.encode_range({s: ref.s, e: {r: lastRow, c: lastCol}});
 }
 
-function buildRowsForSheet(sheet, fileName, sheetName, market, media, hdr) {
+function buildRowsForSheet(sheet, fileName, sheetName, market, media, hdr, opts) {
   tightenRange(sheet);
+  opts = opts || {};
+  // sheet_to_json range can be a string ref to cap the row count for preview mode.
+  var s2jOpts = { range: hdr, blankrows: false };
+  if (opts.maxRows && sheet['!ref']) {
+    try {
+      var rng = XLSX.utils.decode_range(sheet['!ref']);
+      var startRow = (typeof hdr === 'number') ? hdr : rng.s.r;
+      var endRow = Math.min(rng.e.r, startRow + opts.maxRows);
+      s2jOpts.range = XLSX.utils.encode_range({
+        s: { r: startRow, c: rng.s.c },
+        e: { r: endRow,   c: rng.e.c }
+      });
+    } catch(_) {}
+  }
   // No defval:'' -- empty cells become absent properties, which keeps row
   // objects small and downstream code already uses r[col]||'' patterns.
-  var rows = XLSX.utils.sheet_to_json(sheet, { range: hdr, blankrows: false });
+  var rows = XLSX.utils.sheet_to_json(sheet, s2jOpts);
+  var pruneSet = null;
+  if (opts.pruneCols && opts.pruneCols.length) {
+    pruneSet = Object.create(null);
+    for (var pi = 0; pi < opts.pruneCols.length; pi++) pruneSet[opts.pruneCols[pi]] = 1;
+  }
   var cols = {};
   for (var ri = 0; ri < rows.length; ri++) {
     var r = rows[ri];
+    if (pruneSet) {
+      for (var rk in r) if (!pruneSet[rk]) delete r[rk];
+    }
     r.__file = fileName; r.__sheet = sheetName; r.__market = market; r.__media = media;
     for (var k in r) cols[k] = 1;
   }
@@ -992,8 +1094,19 @@ onmessage = function(e) {
         var raw = wb.Sheets[sn];
         var ts = Date.now();
         var hdr = detectHdrRow(raw);
-        var built = buildRowsForSheet(raw, d.fileName, sn, d.market, d.media, hdr);
-        console.log('[ChartIt] ' + d.fileName + ' "' + sn + '": ' + built.rows.length + ' rows in ' + (Date.now()-ts) + 'ms');
+        if (d.metaOnly) {
+          // Lazy mode: tighten the range so rowCount is realistic, but
+          // do not call sheet_to_json. The main thread will request each
+          // sheet's rows separately as needed.
+          tightenRange(raw);
+          var refDec = XLSX.utils.decode_range(raw['!ref'] || 'A1');
+          var approxRows = Math.max(0, refDec.e.r - hdr);
+          console.log('[ChartIt] ' + d.fileName + ' "' + sn + '": meta-only (~' + approxRows + ' rows) in ' + (Date.now()-ts) + 'ms');
+          sheets.push({ name:sn, enabled:false, rows:null, columns:null, rowCount:approxRows, headerRow:hdr });
+          continue;
+        }
+        var built = buildRowsForSheet(raw, d.fileName, sn, d.market, d.media, hdr, { pruneCols: d.pruneCols, maxRows: d.maxRows });
+        console.log('[ChartIt] ' + d.fileName + ' "' + sn + '": ' + built.rows.length + ' rows in ' + (Date.now()-ts) + 'ms' + (d.maxRows ? ' (preview)' : ''));
         sheets.push({ name:sn, enabled:true, rows:built.rows, columns:built.columns, rowCount:built.rows.length, headerRow:hdr });
       }
       console.log('[ChartIt] ' + d.fileName + ' worker compute total: ' + (Date.now()-t0) + 'ms');
@@ -1014,8 +1127,8 @@ onmessage = function(e) {
       if (!raw) { postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:[], columns:[] }); return; }
       var hdr = d.headerRow || 0;
       var ts2 = Date.now();
-      var built = buildRowsForSheet(raw, d.fileName, d.sheetName, d.market, d.media, hdr);
-      console.log('[ChartIt] ' + d.fileName + ' "' + d.sheetName + '": ' + built.rows.length + ' rows in ' + (Date.now()-ts2) + 'ms (parseSheet)');
+      var built = buildRowsForSheet(raw, d.fileName, d.sheetName, d.market, d.media, hdr, { pruneCols: d.pruneCols, maxRows: d.maxRows });
+      console.log('[ChartIt] ' + d.fileName + ' "' + d.sheetName + '": ' + built.rows.length + ' rows in ' + (Date.now()-ts2) + 'ms (parseSheet' + (d.maxRows ? ', preview' : '') + ')');
       var txAt2 = Date.now();
       postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:built.rows, columns:built.columns, _workerRxAt:rxAt, _workerTxAt:txAt2, _mainSentAt:d._sentAt });
     } catch(err) { postMessage({ action:'error', id:d.id, error: err.message }); }
@@ -1152,7 +1265,9 @@ async function processFile(file) {
   const result = await workerRequest(worker, {
     action:'parseFile', buffer:arrayBuf, _sentAt: Date.now(),
     fileName:file.name, market:meta.market, media:meta.media,
-    parser: PARSER_CHOICE
+    parser: PARSER_CHOICE, metaOnly: LAZY_PARSE,
+    pruneCols: _collectPruneColumns(),
+    maxRows: PREVIEW_MODE ? PREVIEW_ROWS : 0
   });
   const tReplyAt = performance.now();
   if (result._workerRxAt && result._workerTxAt && result._mainSentAt) {
@@ -1163,16 +1278,18 @@ async function processFile(file) {
   }
   console.log('[ChartIt timing] ' + file.name + ' parseFile roundtrip (main thread): ' + (tReplyAt - tPostStart).toFixed(0) + 'ms');
 
-  // Persist to cache fire-and-forget. We clone the buffer so the cached
-  // copy is independent of the live Uint8Array (which may be transferred
-  // back to the worker for later sheet re-parses).
-  cachePut(key, {
-    sheets: result.sheets,
-    meta: meta,
-    buffer: keepBuf.buffer.slice(0)
-  });
+  // In eager mode we have the full rows, so cache them. In lazy mode
+  // each sheet is cached individually once it finishes parsing (see
+  // loadSheetsInBackground below).
+  if (!LAZY_PARSE) {
+    cachePut(key, {
+      sheets: result.sheets,
+      meta: meta,
+      buffer: keepBuf.buffer.slice(0)
+    });
+  }
 
-  return { fileName:file.name, meta, buffer:keepBuf, sheets:result.sheets, _worker:worker };
+  return { fileName:file.name, meta, buffer:keepBuf, sheets:result.sheets, _worker:worker, _workerHasCache:true, _cacheKey:key, _lazy:LAZY_PARSE };
 }
 
 async function parseSheet(fileEntry, sheetName) {
@@ -1183,15 +1300,29 @@ async function parseSheet(fileEntry, sheetName) {
     return;
   }
   const hdrRow = s.headerRow || 0;
-  if (!fileEntry._worker) fileEntry._worker = spawnWorker();
+  let needsBuffer = false;
+  if (!fileEntry._worker) {
+    fileEntry._worker = spawnWorker();
+    needsBuffer = true; // brand new worker has no cached workbook
+  } else if (!fileEntry._workerHasCache) {
+    needsBuffer = true;
+  }
   const worker = fileEntry._worker;
-  const bufCopy = fileEntry.buffer.buffer.slice(0);
-  const tPostStart = performance.now();
-  const result = await workerRequest(worker, {
-    action:'parseSheet', buffer:bufCopy, _sentAt: Date.now(),
+  // Skip the 68 MB buffer transfer when the worker has already parsed
+  // the file in this session (which is the common case post-Stage 3).
+  const msg = {
+    action:'parseSheet', _sentAt: Date.now(),
     fileName:fileEntry.fileName, market:fileEntry.meta.market, media:fileEntry.meta.media,
-    sheetName, headerRow:hdrRow, parser: PARSER_CHOICE
-  });
+    sheetName, headerRow:hdrRow, parser: PARSER_CHOICE,
+    pruneCols: _collectPruneColumns(),
+    maxRows: (fileEntry._previewPending && fileEntry._previewPending[sheetName]) ? PREVIEW_ROWS : 0
+  };
+  if (needsBuffer) {
+    msg.buffer = fileEntry.buffer.buffer.slice(0);
+  }
+  const tPostStart = performance.now();
+  const result = await workerRequest(worker, msg);
+  fileEntry._workerHasCache = true;
   if (result._workerRxAt && result._workerTxAt && result._mainSentAt) {
     const transferIn = result._workerRxAt - result._mainSentAt;
     const workerCompute = result._workerTxAt - result._workerRxAt;
@@ -1227,6 +1358,66 @@ function disableSheet(fileEntry, sheetName) {
   if (s) { s.rows = null; s.columns = null; s.enabled = false; }
 }
 
+// Lazy-mode background loader: walks the file's sheets, parses each
+// in turn (sequentially through the file's own worker so memory stays
+// bounded), and repaints the dashboard after every sheet so the user
+// sees rows appear progressively instead of staring at a spinner.
+async function loadSheetsInBackground(fileEntry, sheetNames) {
+  const todo = (sheetNames || fileEntry.sheets.filter(s => !s._userDisabled).map(s => s.name)).slice();
+
+  // Preview pass (opt-in via ?preview=1, lazy mode only): rip through
+  // every enabled sheet with a 5000-row cap first so the dashboard
+  // paints against partial data, then circle back below for the full
+  // parse. Eager mode already gets preview rows directly from the
+  // parseFile worker call, so we skip the extra pass there.
+  if (PREVIEW_MODE && fileEntry._lazy) {
+    fileEntry._previewPending = fileEntry._previewPending || {};
+    for (const sn of todo) {
+      const s = fileEntry.sheets.find(sh => sh.name === sn);
+      if (!s || s._userDisabled) continue;
+      s.loading = true;
+      fileEntry._previewPending[sn] = true;
+      try { renderFileList(); } catch(_) {}
+      try {
+        await parseSheet(fileEntry, sn);
+        s._previewLoaded = true;
+        rebuildAllRows();
+        try { rebuildFilters(); applyFilters(); renderAll(); } catch(_) {}
+      } catch (err) { console.error('[ChartIt] preview parse failed for "' + sn + '":', err); }
+      delete fileEntry._previewPending[sn];
+    }
+  }
+
+  for (const sn of todo) {
+    const s = fileEntry.sheets.find(sh => sh.name === sn);
+    if (!s) continue;
+    if (s._userDisabled) continue;
+    s.loading = true;
+    try { renderFileList(); } catch(_) {}
+    try {
+      await parseSheet(fileEntry, sn);
+      s.loading = false;
+      s._previewLoaded = false;
+      rebuildAllRows();
+      try { rebuildFilters(); applyFilters(); renderAll(); } catch(_) {}
+      try { renderFileList(); } catch(_) {}
+    } catch (err) {
+      console.error('[ChartIt] background parse failed for "' + sn + '":', err);
+      s.loading = false;
+      try { renderFileList(); } catch(_) {}
+    }
+  }
+  // Once everything is parsed, persist the full workbook to the cache
+  // so the next open is instant.
+  if (fileEntry._lazy && fileEntry._cacheKey && fileEntry.buffer) {
+    cachePut(fileEntry._cacheKey, {
+      sheets: fileEntry.sheets,
+      meta: fileEntry.meta,
+      buffer: fileEntry.buffer.buffer.slice(0)
+    });
+  }
+}
+
 function rebuildAllRows() {
   S.allRows = [];
   S.allCols = [];
@@ -1242,8 +1433,122 @@ function rebuildAllRows() {
   S.allCols = [...colSet];
 }
 
+// ── Export / re-import parsed data as a compact binary ───
+// Skips the entire XLSX parsing pipeline on re-open. The .chartit-data
+// format is a gzipped JSON blob shaped like { version, format, files: [
+//   { fileName, meta, sheets: [{ name, enabled, rows, columns, ... }] }
+// ]}. 68 MB XLSX -> typically <5 MB .chartit-data.gz that re-opens
+// in well under a second.
+async function exportChartItData() {
+  if (!S.files.length) {
+    if (typeof showToast === 'function') showToast('Nothing to export yet');
+    return;
+  }
+  if (typeof showLoading === 'function') showLoading('Packaging ChartIt data...');
+  try {
+    const payload = {
+      version: 1,
+      format: 'chartit-data',
+      exportedAt: new Date().toISOString(),
+      files: S.files.map(f => ({
+        fileName: f.fileName,
+        meta: f.meta,
+        sheets: f.sheets.map(s => ({
+          name: s.name,
+          enabled: !!s.enabled,
+          rows: s.rows || null,
+          columns: s.columns || null,
+          rowCount: s.rowCount || (s.rows ? s.rows.length : 0),
+          headerRow: s.headerRow || 0
+        }))
+      }))
+    };
+    const json = JSON.stringify(payload);
+    let blob;
+    if (typeof CompressionStream === 'function') {
+      const stream = new Blob([json], { type:'application/json' }).stream()
+        .pipeThrough(new CompressionStream('gzip'));
+      blob = await new Response(stream).blob();
+    } else {
+      blob = new Blob([json], { type:'application/json' });
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    const baseName = S.files.length === 1
+      ? S.files[0].fileName.replace(/\.(xlsx|xlsm)$/i,'')
+      : 'chartit-data';
+    a.download = baseName + '.chartit-data' + (typeof CompressionStream === 'function' ? '.gz' : '.json');
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    if (typeof showToast === 'function') showToast('Saved ' + (blob.size/1048576).toFixed(1) + ' MB');
+  } finally {
+    if (typeof hideLoading === 'function') hideLoading();
+  }
+}
+window.exportChartItData = exportChartItData;
+
+function _isChartItDataFile(file) {
+  return /\.chartit-data\.(gz|json)$/i.test(file.name) ||
+         /\.cit$/i.test(file.name);
+}
+
+async function loadChartItDataFile(file) {
+  const t0 = performance.now();
+  let json;
+  const isGz = /\.gz$/i.test(file.name);
+  if (isGz && typeof DecompressionStream === 'function') {
+    const stream = file.stream().pipeThrough(new DecompressionStream('gzip'));
+    json = await new Response(stream).text();
+  } else {
+    json = await file.text();
+  }
+  const data = JSON.parse(json);
+  if (!data || data.format !== 'chartit-data' || !Array.isArray(data.files)) {
+    throw new Error('Not a ChartIt data file');
+  }
+  for (const f of data.files) {
+    if (S.files.find(ef => ef.fileName === f.fileName)) continue;
+    S.files.push({
+      fileName: f.fileName,
+      meta: f.meta || { market:'', media:'' },
+      buffer: null,
+      sheets: (f.sheets || []).map(s => ({
+        name: s.name,
+        enabled: !!s.enabled,
+        rows: s.rows || null,
+        columns: s.columns || null,
+        rowCount: s.rowCount || (s.rows ? s.rows.length : 0),
+        headerRow: s.headerRow || 0
+      })),
+      _worker: null,
+      _workerHasCache: false,
+      _fromChartitData: true,
+      _lazy: false
+    });
+  }
+  console.log('[ChartIt timing] loaded ' + data.files.length + ' workbook(s) from ChartIt data in ' + (performance.now()-t0).toFixed(0) + 'ms');
+}
+
 async function handleFiles(files) {
-  const valid = [...files].filter(f => /\.(xlsx|xlsm)$/i.test(f.name));
+  const all = [...files];
+  // Route ChartIt data files separately - they bypass XLSX parsing entirely.
+  const chartitFiles = all.filter(_isChartItDataFile);
+  if (chartitFiles.length) {
+    if (typeof showLoading === 'function') showLoading('Loading ChartIt data...');
+    try {
+      for (const f of chartitFiles) {
+        try { await loadChartItDataFile(f); }
+        catch (err) { console.error(err); alert('Could not load ' + f.name + ': ' + err.message); }
+      }
+    } finally {
+      if (typeof hideLoading === 'function') hideLoading();
+    }
+    rebuildAllRows();
+    rebuildFilters();
+    applyFilters();
+    renderAll();
+  }
+  const valid = all.filter(f => /\.(xlsx|xlsm)$/i.test(f.name));
   if (!valid.length) return;
   console.time('[ChartIt] handleFiles total');
   const toProcess = valid.filter(f => !S.files.find(ef => ef.fileName === f.name));
@@ -1266,6 +1571,7 @@ async function handleFiles(files) {
           const savedHdr = savedSh.headerRow || 0;
           if (savedSh.enabled === false) {
             sh.enabled = false; sh.rows = null; sh.columns = null; sh.headerRow = savedHdr;
+            sh._userDisabled = true; // remember user intent for lazy loader
           } else { sh.headerRow = savedHdr; }
         }
       }
@@ -1280,6 +1586,22 @@ async function handleFiles(files) {
   applyFilters();
   renderAll();
   console.timeEnd('[ChartIt] handleFiles total');
+
+  // In lazy mode we've only got metadata at this point; kick off
+  // per-sheet parses in the background. Each completion triggers a
+  // re-render so the dashboard fills in progressively.
+  for (const r of results) {
+    if (r && r._lazy) {
+      const namesToLoad = r.sheets.filter(s => !s._userDisabled && s.rowCount !== 0).map(s => s.name);
+      loadSheetsInBackground(r, namesToLoad);
+    } else if (r && !r._lazy && PREVIEW_MODE) {
+      // Eager + preview: the worker only returned the first 5000 rows
+      // per sheet, so re-parse each enabled sheet at full size in the
+      // background.
+      const namesToLoad = r.sheets.filter(s => s.enabled && !s._userDisabled).map(s => s.name);
+      if (namesToLoad.length) loadSheetsInBackground(r, namesToLoad);
+    }
+  }
 }
 
 /* ═══════════════════════════════════════════
@@ -1805,8 +2127,11 @@ function renderFileList() {
       row.style.cssText = 'display:flex;align-items:center;gap:4px;padding:2px 0;';
       const safeSheet = sh.name.replace(/'/g,"\\'");
       const hdrRow = sh.headerRow || 0;
-      row.innerHTML = `<label class="sheet-toggle" style="flex:1;margin:0;"><input type="checkbox" ${sh.enabled?'checked':''} onchange="toggleSheet('${safeName}','${safeSheet}',this.checked)">
-        <span>${sh.name}</span><span class="sheet-rows">${sh.enabled && sh.rows ? sh.rows.length + ' rows' : '~' + (sh.rowCount||'?') + ' rows'}</span></label>
+      const rowsLabel = sh.loading
+        ? '<span class="sheet-rows" style="opacity:.7;font-style:italic;">loading…</span>'
+        : '<span class="sheet-rows">' + (sh.enabled && sh.rows ? sh.rows.length + ' rows' : '~' + (sh.rowCount||'?') + ' rows') + '</span>';
+      row.innerHTML = `<label class="sheet-toggle" style="flex:1;margin:0;"><input type="checkbox" ${sh.enabled?'checked':''} ${sh.loading?'disabled':''} onchange="toggleSheet('${safeName}','${safeSheet}',this.checked)">
+        <span>${sh.name}</span>${rowsLabel}</label>
         <label style="font-size:9px;color:var(--text-secondary);white-space:nowrap;display:flex;align-items:center;gap:2px;" title="Header row (0-based)">Row<input type="number" value="${hdrRow}" min="0" max="50" style="width:32px;padding:1px 3px;font-size:9px;border:1px solid var(--border);border-radius:3px;" onchange="setSheetHeaderRow('${safeName}','${safeSheet}',parseInt(this.value))"></label>`;
       sheetList.appendChild(row);
     });
@@ -1818,7 +2143,9 @@ function renderFileList() {
 async function toggleSheet(fileName, sheetName, enable) {
   const f = S.files.find(f=>f.fileName===fileName);
   if (!f) return;
+  const s = f.sheets.find(sh => sh.name === sheetName);
   if (enable) {
+    if (s) s._userDisabled = false;
     showLoading('Parsing ' + sheetName + '...');
     await parseSheet(f, sheetName);
     rebuildAllRows();
@@ -1826,6 +2153,7 @@ async function toggleSheet(fileName, sheetName, enable) {
     renderFileList();
     hideLoading();
   } else {
+    if (s) s._userDisabled = true;
     disableSheet(f, sheetName);
     rebuildAllRows();
     rebuildFilters(); applyFilters(); renderAll();
