@@ -1012,15 +1012,20 @@ onmessage = function(e) {
   _emitRoundtrip(rxAt, d._sentAt, d.action, d.fileName, d.sheetName);
   var useWasm = d.parser === 'wasm';
 
+  // Workbook id is stable per file across job ids (parseFile/parseSheet
+  // use different msg ids). Falling back to d.id keeps the legacy path
+  // working if any caller still omits wbId.
+  var wbk = d.wbId || d.id;
+
   if (d.action === 'parseFile' && useWasm) {
     var buf = new Uint8Array(d.buffer);
-    bufCache[d.id] = buf;
+    bufCache[wbk] = buf;
     var t0 = Date.now();
     ensureModern().then(function() {
       return ModernXlsx.readBuffer(buf);
     }).then(function(wb) {
-      wbCache[d.id] = wb;
-      wbKind[d.id] = 'modern';
+      wbCache[wbk] = wb;
+      wbKind[wbk] = 'modern';
       console.log('[ChartIt] [wasm] ' + d.fileName + ' readBuffer: ' + (Date.now()-t0) + 'ms');
       var sheets = [];
       for (var i = 0; i < wb.sheetNames.length; i++) {
@@ -1050,13 +1055,14 @@ onmessage = function(e) {
 
   if (d.action === 'parseSheet' && useWasm) {
     ensureModern().then(function() {
-      var wb = wbCache[d.id];
-      if (!wb || wbKind[d.id] !== 'modern') {
-        var buf = d.buffer ? new Uint8Array(d.buffer) : bufCache[d.id];
+      var wb = wbCache[wbk];
+      if (!wb || wbKind[wbk] !== 'modern') {
+        var buf = d.buffer ? new Uint8Array(d.buffer) : bufCache[wbk];
         if (!buf) { postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:[], columns:[] }); return null; }
+        if (d.buffer) bufCache[wbk] = buf;
         return ModernXlsx.readBuffer(buf).then(function(reloaded) {
-          wbCache[d.id] = reloaded;
-          wbKind[d.id] = 'modern';
+          wbCache[wbk] = reloaded;
+          wbKind[wbk] = 'modern';
           return reloaded;
         });
       }
@@ -1078,11 +1084,11 @@ onmessage = function(e) {
   if (d.action === 'parseFile') {
     try {
       var buf = new Uint8Array(d.buffer);
-      bufCache[d.id] = buf;
+      bufCache[wbk] = buf;
       var t0 = Date.now();
       var wb = XLSX.read(buf, READ_OPTS);
-      wbCache[d.id] = wb;
-      wbKind[d.id] = 'sheetjs';
+      wbCache[wbk] = wb;
+      wbKind[wbk] = 'sheetjs';
       console.log('[ChartIt] ' + d.fileName + ' XLSX.read: ' + (Date.now()-t0) + 'ms');
       var sheets = [];
       for (var i = 0; i < wb.SheetNames.length; i++) {
@@ -1115,13 +1121,14 @@ onmessage = function(e) {
     } catch(err) { postMessage({ action:'error', id:d.id, error: err.message }); }
   } else if (d.action === 'parseSheet') {
     try {
-      var wb = wbCache[d.id];
-      if (!wb || wbKind[d.id] !== 'sheetjs') {
-        var buf = d.buffer ? new Uint8Array(d.buffer) : bufCache[d.id];
+      var wb = wbCache[wbk];
+      if (!wb || wbKind[wbk] !== 'sheetjs') {
+        var buf = d.buffer ? new Uint8Array(d.buffer) : bufCache[wbk];
         if (!buf) { postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:[], columns:[] }); return; }
+        if (d.buffer) bufCache[wbk] = buf;
         wb = XLSX.read(buf, READ_OPTS);
-        wbCache[d.id] = wb;
-        wbKind[d.id] = 'sheetjs';
+        wbCache[wbk] = wb;
+        wbKind[wbk] = 'sheetjs';
       }
       var raw = wb.Sheets[d.sheetName];
       if (!raw) { postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:[], columns:[] }); return; }
@@ -1133,9 +1140,13 @@ onmessage = function(e) {
       postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:built.rows, columns:built.columns, _workerRxAt:rxAt, _workerTxAt:txAt2, _mainSentAt:d._sentAt });
     } catch(err) { postMessage({ action:'error', id:d.id, error: err.message }); }
   } else if (d.action === 'clearCache') {
-    delete wbCache[d.id];
-    delete bufCache[d.id];
-    delete wbKind[d.id];
+    delete wbCache[wbk];
+    delete bufCache[wbk];
+    delete wbKind[wbk];
+  } else if (d.action === 'dropBuffer') {
+    // Free the raw .xlsx bytes once main thread no longer needs them.
+    // The parsed workbook (wbCache) stays available for fast re-parses.
+    delete bufCache[wbk];
   }
 };
 `;
@@ -1159,6 +1170,11 @@ function getSharedWorker() {
   if (!_sharedWorker) _sharedWorker = spawnWorker();
   return _sharedWorker;
 }
+
+// Stable per-workbook id used as the cache key inside the shared
+// worker. Distinct from msg.id (which changes every roundtrip).
+let _wbIdCounter = 0;
+function nextWbId() { return 'wb' + (++_wbIdCounter); }
 
 function workerRequest(worker, msg) {
   return new Promise((resolve, reject) => {
@@ -1244,9 +1260,11 @@ async function processFile(file) {
   const key = _cacheKey(file);
   const cached = await cacheGet(key);
   if (cached && cached.sheets) {
-    const buf = cached.buffer ? new Uint8Array(cached.buffer) : null;
     console.log('[ChartIt] ' + file.name + ' served from cache (' + cached.sheets.length + ' sheets)');
-    return { fileName:file.name, meta:cached.meta || meta, buffer:buf, sheets:cached.sheets, _worker:null, _fromCache:true };
+    // Cached files do not keep a live buffer in RAM. If parseSheet
+    // needs it later, _rehydrateBuffer() pulls it from IndexedDB.
+    return { fileName:file.name, meta:cached.meta || meta, buffer:null, sheets:cached.sheets,
+             _wbId: nextWbId(), _workerHasCache:false, _cacheKey:key, _fromCache:true };
   }
 
   const tFrStart = performance.now();
@@ -1259,11 +1277,16 @@ async function processFile(file) {
   const sizeMB = (arrayBuf.byteLength / 1048576).toFixed(1);
   console.log('[ChartIt timing] ' + file.name + ' FileReader -> ArrayBuffer: ' + (performance.now() - tFrStart).toFixed(0) + 'ms (' + sizeMB + ' MB)');
 
-  const keepBuf = new Uint8Array(arrayBuf.slice(0));
-  const worker = spawnWorker();
+  // Persist the raw bytes to IndexedDB BEFORE we send them to the
+  // worker (transfer detaches the ArrayBuffer). This lets us drop the
+  // main-thread copy after parsing and re-hydrate from disk later.
+  try { await cachePut(key, { sheets: null, meta, buffer: arrayBuf.slice(0) }); } catch(_) {}
+
+  const wbId = nextWbId();
+  const worker = getSharedWorker();
   const tPostStart = performance.now();
   const result = await workerRequest(worker, {
-    action:'parseFile', buffer:arrayBuf, _sentAt: Date.now(),
+    action:'parseFile', buffer:arrayBuf, wbId, _sentAt: Date.now(),
     fileName:file.name, market:meta.market, media:meta.media,
     parser: PARSER_CHOICE, metaOnly: LAZY_PARSE,
     pruneCols: _collectPruneColumns(),
@@ -1278,48 +1301,75 @@ async function processFile(file) {
   }
   console.log('[ChartIt timing] ' + file.name + ' parseFile roundtrip (main thread): ' + (tReplyAt - tPostStart).toFixed(0) + 'ms');
 
-  // In eager mode we have the full rows, so cache them. In lazy mode
-  // each sheet is cached individually once it finishes parsing (see
-  // loadSheetsInBackground below).
+  // In eager mode we have all rows now, so finalise the cache record
+  // with them (the bytes were already saved above). Lazy mode finalises
+  // in loadSheetsInBackground once every sheet has streamed in.
   if (!LAZY_PARSE) {
-    cachePut(key, {
-      sheets: result.sheets,
-      meta: meta,
-      buffer: keepBuf.buffer.slice(0)
-    });
+    try {
+      const existing = await cacheGet(key);
+      await cachePut(key, {
+        sheets: result.sheets, meta,
+        buffer: existing && existing.buffer ? existing.buffer : null
+      });
+    } catch(_) {}
   }
 
-  return { fileName:file.name, meta, buffer:keepBuf, sheets:result.sheets, _worker:worker, _workerHasCache:true, _cacheKey:key, _lazy:LAZY_PARSE };
+  // Worker keeps the parsed workbook + the raw bytes for fast follow-up
+  // parseSheet calls when we still expect more work (lazy mode, or
+  // eager+preview which re-parses for full rows). In plain eager mode
+  // every sheet is already in the result, so we can free the worker's
+  // ~200-400 MB right away.
+  let workerHasCache = true;
+  if (!LAZY_PARSE && !PREVIEW_MODE) {
+    try { worker.postMessage({ action:'clearCache', wbId, id:'_drop_'+wbId }); } catch(_) {}
+    workerHasCache = false;
+  }
+  return { fileName:file.name, meta, buffer:null, sheets:result.sheets,
+           _wbId: wbId, _workerHasCache: workerHasCache, _cacheKey:key, _lazy:LAZY_PARSE };
+}
+
+// Pull the raw .xlsx bytes back from IndexedDB when the worker has
+// lost its copy (clearCache after lazy load) or never had one
+// (cached load on a fresh page). Idempotent: returns immediately if
+// the worker already has them.
+async function _rehydrateBuffer(fileEntry) {
+  if (!fileEntry._cacheKey) return null;
+  const cached = await cacheGet(fileEntry._cacheKey);
+  if (cached && cached.buffer) return new Uint8Array(cached.buffer);
+  return null;
 }
 
 async function parseSheet(fileEntry, sheetName) {
   const s = fileEntry.sheets.find(sh => sh.name === sheetName);
   if (!s) return;
-  if (!fileEntry.buffer || !fileEntry.buffer.byteLength) {
-    if (typeof showToast === 'function') showToast('Cannot re-parse "' + sheetName + '" — please re-upload the workbook');
-    return;
-  }
+  if (!fileEntry._wbId) fileEntry._wbId = nextWbId();
   const hdrRow = s.headerRow || 0;
-  let needsBuffer = false;
-  if (!fileEntry._worker) {
-    fileEntry._worker = spawnWorker();
-    needsBuffer = true; // brand new worker has no cached workbook
-  } else if (!fileEntry._workerHasCache) {
-    needsBuffer = true;
+  const worker = getSharedWorker();
+
+  // Decide whether the worker needs the raw bytes for this call:
+  // - first ever call for this workbook (no worker cache yet)
+  // - or buffer was previously dropped and the worker no longer has it
+  let needsBuffer = !fileEntry._workerHasCache;
+  let bufToSend = null;
+  if (needsBuffer) {
+    let buf = fileEntry.buffer;
+    if (!buf || !buf.byteLength) buf = await _rehydrateBuffer(fileEntry);
+    if (!buf || !buf.byteLength) {
+      if (typeof showToast === 'function') showToast('Cannot re-parse "' + sheetName + '" — please re-upload the workbook');
+      return;
+    }
+    bufToSend = buf.buffer.slice(0);
   }
-  const worker = fileEntry._worker;
-  // Skip the 68 MB buffer transfer when the worker has already parsed
-  // the file in this session (which is the common case post-Stage 3).
+
   const msg = {
-    action:'parseSheet', _sentAt: Date.now(),
+    action:'parseSheet', _sentAt: Date.now(), wbId: fileEntry._wbId,
     fileName:fileEntry.fileName, market:fileEntry.meta.market, media:fileEntry.meta.media,
     sheetName, headerRow:hdrRow, parser: PARSER_CHOICE,
     pruneCols: _collectPruneColumns(),
     maxRows: (fileEntry._previewPending && fileEntry._previewPending[sheetName]) ? PREVIEW_ROWS : 0
   };
-  if (needsBuffer) {
-    msg.buffer = fileEntry.buffer.buffer.slice(0);
-  }
+  if (bufToSend) msg.buffer = bufToSend;
+
   const tPostStart = performance.now();
   const result = await workerRequest(worker, msg);
   fileEntry._workerHasCache = true;
@@ -1407,15 +1457,30 @@ async function loadSheetsInBackground(fileEntry, sheetNames) {
       try { renderFileList(); } catch(_) {}
     }
   }
-  // Once everything is parsed, persist the full workbook to the cache
-  // so the next open is instant.
-  if (fileEntry._lazy && fileEntry._cacheKey && fileEntry.buffer) {
-    cachePut(fileEntry._cacheKey, {
-      sheets: fileEntry.sheets,
-      meta: fileEntry.meta,
-      buffer: fileEntry.buffer.buffer.slice(0)
-    });
+  // Finalise the IndexedDB cache record (the raw bytes were saved
+  // up front in processFile, so we just refresh the sheets payload
+  // here without re-transferring 68 MB of buffer).
+  if (fileEntry._lazy && fileEntry._cacheKey) {
+    try {
+      const existing = await cacheGet(fileEntry._cacheKey);
+      await cachePut(fileEntry._cacheKey, {
+        sheets: fileEntry.sheets,
+        meta: fileEntry.meta,
+        buffer: existing && existing.buffer ? existing.buffer : null
+      });
+    } catch(_) {}
   }
+  // Free worker-side memory now that every enabled sheet has been
+  // parsed: drop the SheetJS workbook (~150-300 MB) and the raw
+  // bytes (~68 MB) for this file. If the user later re-enables a
+  // sheet or changes a header row, parseSheet rehydrates from
+  // IndexedDB on demand.
+  try {
+    const w = getSharedWorker();
+    w.postMessage({ action:'clearCache', wbId: fileEntry._wbId, id:'_drop_'+fileEntry._wbId });
+  } catch(_) {}
+  fileEntry._workerHasCache = false;
+  fileEntry.buffer = null;
 }
 
 function rebuildAllRows() {
@@ -1520,7 +1585,6 @@ async function loadChartItDataFile(file) {
         rowCount: s.rowCount || (s.rows ? s.rows.length : 0),
         headerRow: s.headerRow || 0
       })),
-      _worker: null,
       _workerHasCache: false,
       _fromChartitData: true,
       _lazy: false
@@ -1529,8 +1593,24 @@ async function loadChartItDataFile(file) {
   console.log('[ChartIt timing] loaded ' + data.files.length + ' workbook(s) from ChartIt data in ' + (performance.now()-t0).toFixed(0) + 'ms');
 }
 
+// How many simultaneously open workbooks before we ask the user to
+// confirm. Above this, the tab risks running out of memory on a
+// typical laptop even with the post-Stage-5 cleanups, because the
+// parsed-rows arrays in main-thread RAM dominate and we deliberately
+// don't evict those (charts can reference any sheet at any time).
+const MAX_OPEN_FILES_WARN = 20;
+
 async function handleFiles(files) {
   const all = [...files];
+  const newCount = all.filter(f => !S.files.find(ef => ef.fileName === f.name)).length;
+  const projected = S.files.length + newCount;
+  if (projected > MAX_OPEN_FILES_WARN && newCount > 0) {
+    const ok = window.confirm(
+      'You will have ' + projected + ' workbooks open. Browser tabs typically slow down or crash above ~20-25 large workbooks ' +
+      'because all parsed rows live in memory. Close some files you do not need, or click OK to continue at your own risk.'
+    );
+    if (!ok) return;
+  }
   // Route ChartIt data files separately - they bypass XLSX parsing entirely.
   const chartitFiles = all.filter(_isChartItDataFile);
   if (chartitFiles.length) {
@@ -2162,7 +2242,13 @@ async function toggleSheet(fileName, sheetName, enable) {
 }
 
 function removeFile(name) {
+  const gone = S.files.find(f => f.fileName === name);
   S.files = S.files.filter(f=>f.fileName!==name);
+  // Free any worker-side cache the file still held (relevant when the
+  // file was removed before lazy-loading finished).
+  if (gone && gone._wbId) {
+    try { getSharedWorker().postMessage({ action:'clearCache', wbId: gone._wbId, id:'_drop_'+gone._wbId }); } catch(_) {}
+  }
   rebuildAllRows();
   const tab = activeTab();
   tab.activeMarkets.clear(); tab.activeMediaTypes.clear();
@@ -4941,16 +5027,15 @@ function saveDashboardToFile(includeData) {
         for (const sh of f.sheets) {
           await new Promise(r => setTimeout(r, 0));
           let rows = sh.rows;
-          if (!rows && f.buffer && f.buffer.byteLength) {
+          if (!rows) {
+            // Sheet was disabled or evicted - pull it on demand. parseSheet
+            // re-hydrates the buffer from IndexedDB if the worker no longer
+            // has it cached.
             try {
-              const bufCopy = f.buffer.buffer.slice(0);
-              const parsed = await workerRequest({
-                action:'parseSheet', buffer:bufCopy,
-                id: f._workerId,
-                fileName:f.fileName, market:f.meta.market, media:f.meta.media,
-                sheetName:sh.name, headerRow:sh.headerRow || 0
-              });
-              rows = parsed.rows;
+              await parseSheet(f, sh.name);
+              rows = sh.rows;
+              // Don't leave the sheet permanently enabled just because we
+              // re-parsed it for the save: keep its prior state.
             } catch(e) { console.warn('Could not parse sheet for save:', sh.name, e); }
           }
           if (!rows) { fileData.sheets.push({ name: sh.name, enabled: sh.enabled, columns: sh.columns || [], rows: [], headerRow: sh.headerRow || 0 }); continue; }
