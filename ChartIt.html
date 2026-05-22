@@ -743,8 +743,45 @@ function detectHeaderRow(sheet) {
 }
 
 const _xlsxAbsUrl = new URL('vendor/xlsx.full.min.js', location.href).href;
+const _modernXlsxAbsUrl = new URL('vendor/modern-xlsx.min.js', location.href).href;
+const _modernXlsxWasmAbsUrl = new URL('vendor/modern-xlsx.wasm', location.href).href;
+
+// Parser selection: ?parser=wasm switches to the modern-xlsx (Rust+WASM)
+// path. Default is SheetJS. The switch only affects new files parsed
+// after page load; cached parses are reused as-is regardless.
+const PARSER_CHOICE = (() => {
+  try {
+    const p = new URLSearchParams(location.search).get('parser');
+    if (p === 'wasm' || p === 'sheetjs') return p;
+  } catch(_) {}
+  return 'sheetjs';
+})();
+if (PARSER_CHOICE !== 'sheetjs') {
+  console.log('[ChartIt] Parser override active: ' + PARSER_CHOICE + ' (drop ?parser=wasm to revert)');
+}
+
 const _xlsxWorkerCode = `
-importScripts('${_xlsxAbsUrl}');
+var XLSX_SHEETJS_URL = '${_xlsxAbsUrl}';
+var MODERN_XLSX_URL = '${_modernXlsxAbsUrl}';
+var MODERN_XLSX_WASM_URL = '${_modernXlsxWasmAbsUrl}';
+importScripts(XLSX_SHEETJS_URL);
+
+// modern-xlsx is loaded lazily on first wasm request so users on the
+// default SheetJS path never pay the 1.9 MB WASM download cost.
+var _modernReady = null;
+function ensureModern() {
+  if (_modernReady) return _modernReady;
+  _modernReady = (function() {
+    var t0 = Date.now();
+    try { importScripts(MODERN_XLSX_URL); }
+    catch(e) { return Promise.reject(new Error('Failed to load modern-xlsx: ' + e.message)); }
+    return ModernXlsx.initWasm(MODERN_XLSX_WASM_URL).then(function() {
+      console.log('[ChartIt] [wasm] modern-xlsx ready in ' + (Date.now()-t0) + 'ms');
+    });
+  })();
+  return _modernReady;
+}
+
 var skipPat = /^(instructions|parameters|validationhelper|lookups|.*validate\\s*macros)$/i;
 
 // Tighter parse options: skip work we don't need downstream.
@@ -845,10 +882,97 @@ function buildRowsForSheet(sheet, fileName, sheetName, market, media, hdr) {
   return { rows: rows, columns: Object.keys(cols) };
 }
 
-var wbCache = {};
+function buildRowsForSheetWasm(ws, fileName, sheetName, market, media) {
+  // modern-xlsx auto-detects row 0 as the header. For files with
+  // non-zero header rows the user should stay on the SheetJS path.
+  var rows = ModernXlsx.sheetToJson(ws);
+  var cols = {};
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    r.__file = fileName; r.__sheet = sheetName; r.__market = market; r.__media = media;
+    for (var k in r) cols[k] = 1;
+  }
+  return { rows: rows, columns: Object.keys(cols) };
+}
+
+var wbCache = {};      // file id -> SheetJS workbook OR modern-xlsx Workbook
+var wbKind = {};       // file id -> 'sheetjs' | 'modern'
 var bufCache = {};
+function _emitRoundtrip(rxAt, sentAt, action, fileName, sheetName) {
+  if (sentAt) {
+    console.log('[ChartIt timing] worker received "' + action + '" (' + fileName + (sheetName ? '/' + sheetName : '') + '): main->worker transfer ' + (rxAt - sentAt) + 'ms');
+  }
+}
+
 onmessage = function(e) {
   var d = e.data;
+  var rxAt = Date.now();
+  _emitRoundtrip(rxAt, d._sentAt, d.action, d.fileName, d.sheetName);
+  var useWasm = d.parser === 'wasm';
+
+  if (d.action === 'parseFile' && useWasm) {
+    var buf = new Uint8Array(d.buffer);
+    bufCache[d.id] = buf;
+    var t0 = Date.now();
+    ensureModern().then(function() {
+      return ModernXlsx.readBuffer(buf);
+    }).then(function(wb) {
+      wbCache[d.id] = wb;
+      wbKind[d.id] = 'modern';
+      console.log('[ChartIt] [wasm] ' + d.fileName + ' readBuffer: ' + (Date.now()-t0) + 'ms');
+      var sheets = [];
+      for (var i = 0; i < wb.sheetNames.length; i++) {
+        var sn = wb.sheetNames[i];
+        if (skipPat.test(sn.trim())) {
+          sheets.push({ name:sn, enabled:false, rows:null, columns:null, rowCount:0, headerRow:0 });
+          continue;
+        }
+        var ws = wb.getSheet(sn);
+        if (!ws) {
+          sheets.push({ name:sn, enabled:false, rows:null, columns:null, rowCount:0, headerRow:0 });
+          continue;
+        }
+        var ts = Date.now();
+        var built = buildRowsForSheetWasm(ws, d.fileName, sn, d.market, d.media);
+        console.log('[ChartIt] [wasm] ' + d.fileName + ' "' + sn + '": ' + built.rows.length + ' rows in ' + (Date.now()-ts) + 'ms');
+        sheets.push({ name:sn, enabled:true, rows:built.rows, columns:built.columns, rowCount:built.rows.length, headerRow:0 });
+      }
+      console.log('[ChartIt] [wasm] ' + d.fileName + ' worker compute total: ' + (Date.now()-t0) + 'ms');
+      postMessage({ action:'fileParsed', id:d.id, sheets:sheets, _workerRxAt:rxAt, _workerTxAt:Date.now(), _mainSentAt:d._sentAt });
+    }).catch(function(err) {
+      console.error('[ChartIt] [wasm] error, the SheetJS path is still available without ?parser=wasm:', err);
+      postMessage({ action:'error', id:d.id, error: 'WASM parser failed: ' + err.message });
+    });
+    return;
+  }
+
+  if (d.action === 'parseSheet' && useWasm) {
+    ensureModern().then(function() {
+      var wb = wbCache[d.id];
+      if (!wb || wbKind[d.id] !== 'modern') {
+        var buf = d.buffer ? new Uint8Array(d.buffer) : bufCache[d.id];
+        if (!buf) { postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:[], columns:[] }); return null; }
+        return ModernXlsx.readBuffer(buf).then(function(reloaded) {
+          wbCache[d.id] = reloaded;
+          wbKind[d.id] = 'modern';
+          return reloaded;
+        });
+      }
+      return wb;
+    }).then(function(wb) {
+      if (!wb) return;
+      var ws = wb.getSheet(d.sheetName);
+      if (!ws) { postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:[], columns:[] }); return; }
+      var ts2 = Date.now();
+      var built = buildRowsForSheetWasm(ws, d.fileName, d.sheetName, d.market, d.media);
+      console.log('[ChartIt] [wasm] ' + d.fileName + ' "' + d.sheetName + '": ' + built.rows.length + ' rows in ' + (Date.now()-ts2) + 'ms (parseSheet)');
+      postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:built.rows, columns:built.columns, _workerRxAt:rxAt, _workerTxAt:Date.now(), _mainSentAt:d._sentAt });
+    }).catch(function(err) {
+      postMessage({ action:'error', id:d.id, error: 'WASM parser failed: ' + err.message });
+    });
+    return;
+  }
+
   if (d.action === 'parseFile') {
     try {
       var buf = new Uint8Array(d.buffer);
@@ -856,6 +980,7 @@ onmessage = function(e) {
       var t0 = Date.now();
       var wb = XLSX.read(buf, READ_OPTS);
       wbCache[d.id] = wb;
+      wbKind[d.id] = 'sheetjs';
       console.log('[ChartIt] ' + d.fileName + ' XLSX.read: ' + (Date.now()-t0) + 'ms');
       var sheets = [];
       for (var i = 0; i < wb.SheetNames.length; i++) {
@@ -871,27 +996,33 @@ onmessage = function(e) {
         console.log('[ChartIt] ' + d.fileName + ' "' + sn + '": ' + built.rows.length + ' rows in ' + (Date.now()-ts) + 'ms');
         sheets.push({ name:sn, enabled:true, rows:built.rows, columns:built.columns, rowCount:built.rows.length, headerRow:hdr });
       }
-      console.log('[ChartIt] ' + d.fileName + ' total: ' + (Date.now()-t0) + 'ms');
-      postMessage({ action:'fileParsed', id:d.id, sheets:sheets });
+      console.log('[ChartIt] ' + d.fileName + ' worker compute total: ' + (Date.now()-t0) + 'ms');
+      var txAt = Date.now();
+      postMessage({ action:'fileParsed', id:d.id, sheets:sheets, _workerRxAt:rxAt, _workerTxAt:txAt, _mainSentAt:d._sentAt });
     } catch(err) { postMessage({ action:'error', id:d.id, error: err.message }); }
   } else if (d.action === 'parseSheet') {
     try {
       var wb = wbCache[d.id];
-      if (!wb) {
+      if (!wb || wbKind[d.id] !== 'sheetjs') {
         var buf = d.buffer ? new Uint8Array(d.buffer) : bufCache[d.id];
         if (!buf) { postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:[], columns:[] }); return; }
         wb = XLSX.read(buf, READ_OPTS);
         wbCache[d.id] = wb;
+        wbKind[d.id] = 'sheetjs';
       }
       var raw = wb.Sheets[d.sheetName];
       if (!raw) { postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:[], columns:[] }); return; }
       var hdr = d.headerRow || 0;
+      var ts2 = Date.now();
       var built = buildRowsForSheet(raw, d.fileName, d.sheetName, d.market, d.media, hdr);
-      postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:built.rows, columns:built.columns });
+      console.log('[ChartIt] ' + d.fileName + ' "' + d.sheetName + '": ' + built.rows.length + ' rows in ' + (Date.now()-ts2) + 'ms (parseSheet)');
+      var txAt2 = Date.now();
+      postMessage({ action:'sheetParsed', id:d.id, sheetName:d.sheetName, rows:built.rows, columns:built.columns, _workerRxAt:rxAt, _workerTxAt:txAt2, _mainSentAt:d._sentAt });
     } catch(err) { postMessage({ action:'error', id:d.id, error: err.message }); }
   } else if (d.action === 'clearCache') {
     delete wbCache[d.id];
     delete bufCache[d.id];
+    delete wbKind[d.id];
   }
 };
 `;
@@ -1005,18 +1136,32 @@ async function processFile(file) {
     return { fileName:file.name, meta:cached.meta || meta, buffer:buf, sheets:cached.sheets, _worker:null, _fromCache:true };
   }
 
+  const tFrStart = performance.now();
   const arrayBuf = await new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = e => resolve(e.target.result);
     reader.onerror = reject;
     reader.readAsArrayBuffer(file);
   });
+  const sizeMB = (arrayBuf.byteLength / 1048576).toFixed(1);
+  console.log('[ChartIt timing] ' + file.name + ' FileReader -> ArrayBuffer: ' + (performance.now() - tFrStart).toFixed(0) + 'ms (' + sizeMB + ' MB)');
+
   const keepBuf = new Uint8Array(arrayBuf.slice(0));
   const worker = spawnWorker();
+  const tPostStart = performance.now();
   const result = await workerRequest(worker, {
-    action:'parseFile', buffer:arrayBuf,
-    fileName:file.name, market:meta.market, media:meta.media
+    action:'parseFile', buffer:arrayBuf, _sentAt: Date.now(),
+    fileName:file.name, market:meta.market, media:meta.media,
+    parser: PARSER_CHOICE
   });
+  const tReplyAt = performance.now();
+  if (result._workerRxAt && result._workerTxAt && result._mainSentAt) {
+    const transferIn = result._workerRxAt - result._mainSentAt;
+    const workerCompute = result._workerTxAt - result._workerRxAt;
+    const transferOut = (Date.now() - result._workerTxAt);
+    console.log('[ChartIt timing] ' + file.name + ' main->worker transfer: ' + transferIn + 'ms, worker compute: ' + workerCompute + 'ms, worker->main rows clone: ' + transferOut + 'ms');
+  }
+  console.log('[ChartIt timing] ' + file.name + ' parseFile roundtrip (main thread): ' + (tReplyAt - tPostStart).toFixed(0) + 'ms');
 
   // Persist to cache fire-and-forget. We clone the buffer so the cached
   // copy is independent of the live Uint8Array (which may be transferred
@@ -1041,11 +1186,19 @@ async function parseSheet(fileEntry, sheetName) {
   if (!fileEntry._worker) fileEntry._worker = spawnWorker();
   const worker = fileEntry._worker;
   const bufCopy = fileEntry.buffer.buffer.slice(0);
+  const tPostStart = performance.now();
   const result = await workerRequest(worker, {
-    action:'parseSheet', buffer:bufCopy,
+    action:'parseSheet', buffer:bufCopy, _sentAt: Date.now(),
     fileName:fileEntry.fileName, market:fileEntry.meta.market, media:fileEntry.meta.media,
-    sheetName, headerRow:hdrRow
+    sheetName, headerRow:hdrRow, parser: PARSER_CHOICE
   });
+  if (result._workerRxAt && result._workerTxAt && result._mainSentAt) {
+    const transferIn = result._workerRxAt - result._mainSentAt;
+    const workerCompute = result._workerTxAt - result._workerRxAt;
+    const transferOut = (Date.now() - result._workerTxAt);
+    console.log('[ChartIt timing] ' + fileEntry.fileName + '/' + sheetName + ' main->worker transfer: ' + transferIn + 'ms, worker compute: ' + workerCompute + 'ms, worker->main rows clone: ' + transferOut + 'ms');
+  }
+  console.log('[ChartIt timing] ' + fileEntry.fileName + '/' + sheetName + ' parseSheet roundtrip (main thread): ' + (performance.now() - tPostStart).toFixed(0) + 'ms');
   s.rows = result.rows;
   s.columns = result.columns;
   s.rowCount = result.rows.length;
